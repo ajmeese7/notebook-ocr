@@ -1,0 +1,31 @@
+# Private material — never commit notebook content, photos, or transcriptions.
+# Output .md files live under vault_dir, so ignoring the directory covers them.
+vault/
+photos/
+state.json
+
+# User-specific local config (may hold absolute paths). Ship config.example.yaml instead.
+config.yaml
+
+# Build plan (working doc, not part of the repo)
+notebook-ocr-plan.md
+
+# Photos / scans, wherever they land
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.heic
+*.heif
+
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+build/

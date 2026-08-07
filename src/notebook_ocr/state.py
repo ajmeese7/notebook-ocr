@@ -24,9 +24,16 @@ class State:
             self._pages = raw.get("pages", {})
 
     def get_text(self, sha256: str) -> str | None:
-        """Cached transcription for this content hash, or None if not yet processed."""
+        """Cached transcription for this content hash, or None if not usable.
+
+        A malformed entry (hand-edited file, interrupted older write) is treated as a
+        miss rather than an error, so the page is simply transcribed again.
+        """
         entry = self._pages.get(sha256)
-        return entry["text"] if entry else None
+        if not isinstance(entry, dict):
+            return None
+        text = entry.get("text")
+        return text if isinstance(text, str) and text.strip() else None
 
     def put(self, sha256: str, text: str, model: str) -> None:
         """Record a fresh transcription with the model and a local-time timestamp."""

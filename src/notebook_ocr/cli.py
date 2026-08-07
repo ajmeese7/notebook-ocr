@@ -5,13 +5,23 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import anthropic
 from dotenv import load_dotenv
 
 from .config import load_config
 from .discover import discover
 from .preprocess import preprocess_image
 from .state import State
-from .transcribe import Transcriber
+from .transcribe import CredentialsMissing, TranscriptionError, Transcriber
+
+# A bad key, model name, or permission fails identically on every page, so abort the run
+# instead of burning through the whole folder to collect the same error N times.
+_FATAL_API_ERRORS = (
+    anthropic.AuthenticationError,
+    anthropic.PermissionDeniedError,
+    anthropic.NotFoundError,
+    anthropic.BadRequestError,
+)
 from .vault import PageEntry, build_markdown, write_notebook
 
 
@@ -30,6 +40,7 @@ def run(config_path: Path) -> Path | None:
     state = State(config.state_file)
     transcriber: Transcriber | None = None  # created lazily; a fully-cached run needs no API client
     pages: list[PageEntry] = []
+    failures: list[str] = []
 
     for page_number, image in enumerate(images, start=1):
         text = state.get_text(image.sha256)
@@ -38,9 +49,21 @@ def run(config_path: Path) -> Path | None:
                 transcriber = Transcriber(config.model, config.max_tokens)
             print(f"[{page_number}/{len(images)}] transcribing {image.path.name}", file=sys.stderr)
             png = preprocess_image(image.path)
-            text = transcriber.transcribe(png)
-            state.put(image.sha256, text, config.model)
-            state.save()  # persist incrementally so a crash mid-run never re-bills done pages
+            try:
+                text = transcriber.transcribe(png)
+            except CredentialsMissing as error:
+                raise SystemExit(str(error)) from error
+            except _FATAL_API_ERRORS as error:
+                raise SystemExit(f"aborting: {type(error).__name__}: {error}") from error
+            except (TranscriptionError, anthropic.APIError) as error:
+                # Don't cache a failure and don't abandon the pages that did work: mark
+                # this one inline so a re-run retries only it.
+                print(f"  !! {image.path.name}: {error}", file=sys.stderr)
+                failures.append(image.path.name)
+                text = f"<!-- TRANSCRIPTION FAILED: {type(error).__name__}: {error} -->"
+            else:
+                state.put(image.sha256, text, config.model)
+                state.save()  # persist incrementally so a crash never re-bills done pages
         else:
             print(f"[{page_number}/{len(images)}] cached    {image.path.name}", file=sys.stderr)
 
@@ -58,6 +81,12 @@ def run(config_path: Path) -> Path | None:
     content = build_markdown(notebook, source_dir, pages, date.today())
     out_path = write_notebook(config.vault_dir, notebook, content)
     print(f"Wrote {len(pages)} page(s) to {out_path}", file=sys.stderr)
+
+    if failures:
+        raise SystemExit(
+            f"{len(failures)} page(s) failed and are marked in {out_path}: "
+            f"{', '.join(failures)}. Re-run to retry only those pages."
+        )
     return out_path
 
 

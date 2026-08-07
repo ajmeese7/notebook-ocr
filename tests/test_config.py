@@ -4,6 +4,7 @@ from pydantic import ValidationError
 from notebook_ocr.config import load_config
 
 
+@pytest.mark.unit
 def test_loads_valid_config(tmp_path):
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
@@ -20,6 +21,7 @@ def test_loads_valid_config(tmp_path):
     assert config.max_tokens == 16000
 
 
+@pytest.mark.unit
 def test_applies_defaults_when_optional_fields_omitted(tmp_path):
     cfg = tmp_path / "config.yaml"
     cfg.write_text("input_dir: ./photos\nvault_dir: ./vault\n")
@@ -31,6 +33,7 @@ def test_applies_defaults_when_optional_fields_omitted(tmp_path):
     assert config.state_file.name == "state.json"
 
 
+@pytest.mark.unit
 def test_rejects_unknown_key(tmp_path):
     cfg = tmp_path / "config.yaml"
     cfg.write_text("input_dir: ./photos\nvault_dir: ./vault\napi_key: sk-should-not-be-here\n")
@@ -39,6 +42,7 @@ def test_rejects_unknown_key(tmp_path):
         load_config(cfg)
 
 
+@pytest.mark.unit
 def test_expands_home_directory(tmp_path):
     cfg = tmp_path / "config.yaml"
     cfg.write_text("input_dir: ~/photos\nvault_dir: ~/vault\n")

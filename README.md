@@ -6,8 +6,9 @@ Point it at a folder of notebook page photos; it transcribes each page with the 
 
 - **One folder = one notebook.** The output file is named after the folder: `<folder>.md`.
 - **No renaming required.** Page order is derived from capture time (EXIF `DateTimeOriginal`, falling back to file mtime), with filename as a stable tiebreak. Just photograph pages in order.
-- **Local cleanup first.** Each image is deskewed, gently auto-cropped, and contrast-boosted (OpenCV) before it is sent as PNG to Claude.
+- **Local cleanup first.** Each image is deskewed, gently auto-cropped, contrast-boosted, and downscaled to a 2576px long edge (OpenCV) before it is sent as PNG to Claude. The downscale matches the model's vision resolution and keeps the request under the API's 5 MB per-image limit, which a straight-from-the-phone 12 MP page would otherwise exceed.
 - **Idempotent re-runs.** Every page's transcription is cached in `state.json`, keyed by the SHA-256 of the image bytes. Re-running only transcribes new images, but always rebuilds the complete notebook.
+- **Failures are per-page.** A page that is refused, truncated, or empty is not cached and does not abort the run: it is marked inline in the markdown, listed on stderr, and the command exits non-zero. Re-running retries only those pages.
 
 ## Setup
 
@@ -17,7 +18,7 @@ Requires [uv](https://docs.astral.sh/uv/) and Python 3.11–3.13 (uv will fetch 
 uv sync
 ```
 
-Provide Claude credentials via the environment — `ANTHROPIC_API_KEY`, or an [`ant auth login`](https://platform.claude.com) profile. Nothing secret goes in config. A `.env` file in the working directory is loaded automatically (it is gitignored); an already-exported variable takes precedence.
+The Claude API key comes from the `ANTHROPIC_API_KEY` environment variable. Either export it yourself, or put it in a `.env` file in the working directory — `cp .env.example .env` — which the CLI loads at startup. An already-exported variable takes precedence over `.env`.
 
 ## Usage
 
@@ -38,7 +39,7 @@ state_file: ./state.json
 
 ## Privacy
 
-Photos, transcriptions (`vault/`), and `state.json` are gitignored. If you point `input_dir` or `vault_dir` somewhere else, make sure it stays covered by `.gitignore`. The API key is read from the environment and never written to disk.
+Photos, transcriptions (`vault/`), and `state.json` are gitignored — note that `state.json` caches full page text, so it is as sensitive as the notebook itself. If you point `input_dir`, `vault_dir`, or `state_file` somewhere else, make sure it stays covered by `.gitignore`. If you use a `.env`, your key is stored there in plaintext; it is gitignored, but keep it out of backups and shared drives.
 
 ## Development
 

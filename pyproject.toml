@@ -28,3 +28,10 @@ packages = ["src/notebook_ocr"]
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: fast, isolated test with no network or API access",
+    "integration: exercises the live Claude API (requires credentials)",
+]

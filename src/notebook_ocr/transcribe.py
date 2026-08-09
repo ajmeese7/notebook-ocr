@@ -4,11 +4,32 @@ import base64
 
 import anthropic
 
-TRANSCRIPTION_PROMPT = (
-    "Transcribe this handwritten notebook page to markdown, verbatim.\n"
-    "Preserve headings, lists, and structure. Do not summarize, correct, or add commentary.\n"
-    "Mark anything you genuinely cannot read as [?]. Output only the transcription."
-)
+TRANSCRIPTION_PROMPT = """\
+Transcribe this handwritten notebook page to markdown, verbatim.
+Preserve headings, lists, and structure. Do not summarize, correct, or add commentary.
+Mark anything you genuinely cannot read as [?].
+
+Transcribe only the primary, fully visible page. The adjacent page of the spread is
+often partially visible at the edge of the photo; ignore it entirely — its content will
+be captured by its own photo.
+
+Drawings and diagrams: where the page contains a drawing, diagram, or sketch, render it
+as an inline <svg> element at that position in the output. Capture the diagram's
+structure (shapes, arrows, connections, spatial relationships, handwritten labels as
+<text>), not its stroke-level appearance. Use a viewBox sized to the diagram, black
+strokes on transparent background, no fill unless the original is filled.
+
+Small margin marks (checkmarks, stars, arrows pointing at a line, brackets grouping
+lines) are annotations, not diagrams: represent them as text conventions instead, e.g.
+"[x]" for a checked item, "*" for starred, and a nested blockquote or indented note for
+bracketed groupings. A plain wavy horizontal line whose only job is to divide sections
+becomes "---" — but a line that carries meaning (has labels near it, a direction or
+trend, or connects things) is a diagram and gets an <svg>.
+
+If a drawing is too organic to vectorize faithfully (a scene, a face, a map), emit
+<!-- drawing: one-line description --> instead of a bad SVG.
+
+Output only the transcription."""
 
 
 class TranscriptionError(RuntimeError):

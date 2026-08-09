@@ -43,3 +43,16 @@ def write_notebook(vault_dir: Path, notebook: str, content: str) -> Path:
     out_path = vault_dir / f"{notebook}.md"
     out_path.write_text(content, encoding="utf-8")
     return out_path
+
+
+def render_notebook(
+    vault_dir: Path, source_dir: Path, pages: list[PageEntry], generated: date
+) -> Path:
+    """Build and write one notebook, naming it after the source folder.
+
+    Shared by the transcription run and the review server so a saved correction produces
+    a byte-identical file to a fresh run.
+    """
+    notebook = source_dir.name
+    content = build_markdown(notebook, source_dir, pages, generated)
+    return write_notebook(vault_dir, notebook, content)

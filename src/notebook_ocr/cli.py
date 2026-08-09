@@ -11,8 +11,10 @@ from dotenv import load_dotenv
 from .config import load_config
 from .discover import discover
 from .preprocess import preprocess_image
+from .review import serve
 from .state import State
-from .transcribe import CredentialsMissing, TranscriptionError, Transcriber
+from .transcribe import CredentialsMissing, Transcriber, TranscriptionError
+from .vault import PageEntry, render_notebook
 
 # A bad key, model name, or permission fails identically on every page, so abort the run
 # instead of burning through the whole folder to collect the same error N times.
@@ -22,7 +24,13 @@ _FATAL_API_ERRORS = (
     anthropic.NotFoundError,
     anthropic.BadRequestError,
 )
-from .vault import PageEntry, build_markdown, write_notebook
+
+# Bound to all interfaces so pages can be checked from a phone or tablet on the same
+# network, which is where a photo of a page is easiest to compare against. The server is
+# unauthenticated and can read every page and edit the notes, so `serve` says plainly what
+# is exposed and how to restrict it.
+_DEFAULT_REVIEW_HOST = "0.0.0.0"
+_DEFAULT_REVIEW_PORT = 8420
 
 
 def run(config_path: Path) -> Path | None:
@@ -76,10 +84,7 @@ def run(config_path: Path) -> Path | None:
             )
         )
 
-    source_dir = config.input_dir.resolve()
-    notebook = source_dir.name
-    content = build_markdown(notebook, source_dir, pages, date.today())
-    out_path = write_notebook(config.vault_dir, notebook, content)
+    out_path = render_notebook(config.vault_dir, config.input_dir.resolve(), pages, date.today())
     print(f"Wrote {len(pages)} page(s) to {out_path}", file=sys.stderr)
 
     if failures:
@@ -106,6 +111,24 @@ def main(argv: list[str] | None = None) -> None:
         "-c", "--config", type=Path, default=Path("config.yaml"), help="path to config.yaml"
     )
 
+    review_parser = subparsers.add_parser(
+        "review", help="spot-check pages against their images in a local browser UI"
+    )
+    review_parser.add_argument(
+        "-c", "--config", type=Path, default=Path("config.yaml"), help="path to config.yaml"
+    )
+    review_parser.add_argument(
+        "--host",
+        default=_DEFAULT_REVIEW_HOST,
+        help="bind address; 127.0.0.1 restricts the UI to this machine",
+    )
+    review_parser.add_argument("--port", type=int, default=_DEFAULT_REVIEW_PORT, help="bind port")
+    review_parser.add_argument(
+        "--no-browser", action="store_true", help="do not open a browser window"
+    )
+
     args = parser.parse_args(argv)
     if args.command == "run":
         run(args.config)
+    elif args.command == "review":
+        serve(load_config(args.config), args.host, args.port, not args.no_browser)

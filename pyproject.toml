@@ -14,6 +14,8 @@ dependencies = [
     "pillow>=10.2",
     "pillow-heif>=0.16",
     "python-dotenv>=1.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 
 [project.scripts]
@@ -27,7 +29,10 @@ build-backend = "hatchling.build"
 packages = ["src/notebook_ocr"]
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = [
+    "httpx2>=2.9",
+    "pytest>=8.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

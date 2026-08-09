@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>notebook-ocr review</title>
+    <style>
+      :root {
+        --bg: #16161a;
+        --panel: #1e1e24;
+        --border: #32323c;
+        --text: #e4e4ea;
+        --muted: #8b8b98;
+        --accent: #7aa2f7;
+        --edited: #9ece6a;
+        --missing: #f7768e;
+        --dirty: #e0af68;
+      }
+      * { box-sizing: border-box; }
+      /* Every track below is minmax(0, ...) on purpose: a bare `1fr` has a min-content
+         floor, so a tall image or long transcription would push the page past 100vh and
+         scroll the whole document instead of the pane it belongs to. */
+      body {
+        margin: 0;
+        height: 100vh;
+        display: grid;
+        grid-template-columns: 240px minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr);
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 system-ui, sans-serif;
+      }
+
+      /* Page list */
+      #sidebar { border-right: 1px solid var(--border); overflow-y: auto; min-height: 0; }
+      #notebook-name {
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--border);
+        font-weight: 600;
+        position: sticky;
+        top: 0;
+        background: var(--bg);
+      }
+      #notebook-name small { display: block; color: var(--muted); font-weight: 400; }
+      .page-item {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+        padding: 8px 14px;
+        cursor: pointer;
+        border-left: 3px solid transparent;
+      }
+      .page-item:hover { background: var(--panel); }
+      .page-item.selected { background: var(--panel); border-left-color: var(--accent); }
+      .page-item .num { color: var(--muted); font-variant-numeric: tabular-nums; }
+      .page-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; align-self: center; }
+      .dot.transcribed { background: var(--muted); }
+      .dot.edited { background: var(--edited); }
+      .dot.missing { background: var(--missing); }
+      .dot.dirty { background: var(--dirty); }
+
+      /* Side-by-side panes */
+      #main { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; }
+      #toolbar {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border);
+      }
+      #toolbar .spacer { flex: 1; }
+      #meta { color: var(--muted); font-size: 13px; }
+      button {
+        background: var(--panel);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 5px 12px;
+        font: inherit;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) { border-color: var(--accent); }
+      button:disabled { opacity: 0.4; cursor: default; }
+      #save { border-color: var(--dirty); }
+      #save:disabled { border-color: var(--border); }
+
+      #panes {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr);
+        min-height: 0;
+      }
+      /* Flex, not grid: a percentage max-height only resolves against a definite-height
+         parent, and a grid row sized to its content is not definite. */
+      #image-pane {
+        overflow: auto;
+        min-height: 0;
+        background: #0e0e11;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 12px;
+      }
+      #page-image { display: block; max-width: 100%; max-height: 100%; cursor: zoom-in; }
+      #image-pane.zoomed { align-items: start; justify-content: start; }
+      #image-pane.zoomed #page-image { max-width: none; max-height: none; cursor: zoom-out; }
+      #text-pane {
+        display: grid;
+        grid-template-rows: minmax(0, 1fr);
+        border-left: 1px solid var(--border);
+        min-width: 0;
+      }
+      #text {
+        width: 100%;
+        height: 100%;
+        resize: none;
+        border: 0;
+        padding: 16px;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.7 ui-monospace, "SF Mono", Menlo, monospace;
+        tab-size: 2;
+      }
+      #text:focus { outline: none; }
+      #status { color: var(--muted); font-size: 13px; min-width: 90px; }
+      #status.dirty { color: var(--dirty); }
+      #status.error { color: var(--missing); }
+    </style>
+  </head>
+  <body>
+    <aside id="sidebar">
+      <div id="notebook-name"></div>
+      <div id="page-list"></div>
+    </aside>
+
+    <section id="main">
+      <div id="toolbar">
+        <button id="prev" title="Previous page (k / ←)">←</button>
+        <button id="next" title="Next page (j / →)">→</button>
+        <span id="meta"></span>
+        <span class="spacer"></span>
+        <span id="status"></span>
+        <button id="revert" title="Discard unsaved edits">Revert</button>
+        <button id="save" title="Save correction (ctrl-s)">Save</button>
+      </div>
+      <div id="panes">
+        <div id="image-pane"><img id="page-image" alt="" /></div>
+        <div id="text-pane">
+          <textarea id="text" spellcheck="false" placeholder="No transcription for this page."></textarea>
+        </div>
+      </div>
+    </section>
+
+    <script>
+      const el = (id) => document.getElementById(id);
+      // `saved` is the last known server text; the textarea diverging from it means dirty.
+      let pages = [];
+      // -1 until the first page is selected, so the initial select(0) is not mistaken for
+      // a redundant re-click of the already-current page.
+      let index = -1;
+      let saved = "";
+
+      const current = () => pages[index];
+      const isDirty = () => current() && el("text").value !== saved;
+
+      async function load() {
+        const res = await fetch("/api/notebook");
+        if (!res.ok) return setStatus("failed to load notebook", "error");
+        const data = await res.json();
+        pages = data.pages;
+        el("notebook-name").innerHTML =
+          `${escapeHtml(data.notebook)}<small>${pages.length} page(s)</small>`;
+        renderList();
+        if (pages.length) select(0);
+      }
+
+      function renderList() {
+        el("page-list").replaceChildren(
+          ...pages.map((page, i) => {
+            const item = document.createElement("div");
+            item.className = "page-item" + (i === index ? " selected" : "");
+            item.innerHTML =
+              `<span class="dot ${page.status}"></span>` +
+              `<span class="num">${String(page.page_number).padStart(3, "0")}</span>` +
+              `<span class="name">${escapeHtml(page.filename)}</span>`;
+            item.onclick = () => select(i);
+            return item;
+          })
+        );
+      }
+
+      function select(next) {
+        if (next === index) return;
+        if (isDirty() && !confirm("Discard unsaved edits to this page?")) return;
+        index = next;
+        const page = current();
+        saved = page.text;
+        el("text").value = page.text;
+        el("page-image").src = `/api/pages/${page.sha256}/image`;
+        el("image-pane").classList.remove("zoomed");
+        renderMeta();
+        renderList();
+        refresh();
+      }
+
+      function renderMeta() {
+        const page = current();
+        const note =
+          page.status === "edited" ? " · edited" :
+          page.status === "missing" ? " · not transcribed" : "";
+        el("meta").textContent = `${page.filename} · ${page.capture_time}${note}`;
+      }
+
+      function refresh() {
+        const dirty = isDirty();
+        el("save").disabled = !dirty || !el("text").value.trim();
+        el("revert").disabled = !dirty;
+        el("prev").disabled = index === 0;
+        el("next").disabled = index >= pages.length - 1;
+        setStatus(dirty ? "unsaved" : "", dirty ? "dirty" : "");
+        // Mirror dirtiness onto the list dot so it is visible while scrolling elsewhere.
+        const dot = el("page-list").children[index]?.firstChild;
+        if (dot) dot.className = `dot ${dirty ? "dirty" : current().status}`;
+      }
+
+      function setStatus(message, cls = "") {
+        el("status").textContent = message;
+        el("status").className = cls;
+      }
+
+      async function save() {
+        const page = current();
+        const text = el("text").value;
+        setStatus("saving…");
+        const res = await fetch(`/api/pages/${page.sha256}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        if (!res.ok) return setStatus("save failed", "error");
+        pages[index] = await res.json();
+        saved = pages[index].text;
+        renderMeta();  // the page just became "edited"
+        renderList();
+        refresh();
+        setStatus("saved");
+      }
+
+      function escapeHtml(value) {
+        return value.replace(/[&<>"']/g, (c) =>
+          ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
+        );
+      }
+
+      el("text").addEventListener("input", refresh);
+      el("save").onclick = save;
+      el("revert").onclick = () => { el("text").value = saved; refresh(); };
+      el("prev").onclick = () => select(Math.max(index - 1, 0));
+      el("next").onclick = () => select(Math.min(index + 1, pages.length - 1));
+      el("page-image").onclick = () => el("image-pane").classList.toggle("zoomed");
+
+      document.addEventListener("keydown", (event) => {
+        if ((event.ctrlKey || event.metaKey) && event.key === "s") {
+          event.preventDefault();
+          if (!el("save").disabled) save();
+          return;
+        }
+        // Navigation keys must not hijack typing in the textarea.
+        if (event.target === el("text") || event.ctrlKey || event.metaKey || event.altKey) return;
+        if (event.key === "j" || event.key === "ArrowRight") el("next").click();
+        if (event.key === "k" || event.key === "ArrowLeft") el("prev").click();
+      });
+
+      window.addEventListener("beforeunload", (event) => {
+        if (isDirty()) event.preventDefault();
+      });
+
+      load();
+    </script>
+  </body>
+</html>

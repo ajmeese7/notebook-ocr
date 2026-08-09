@@ -34,6 +34,28 @@ def test_applies_defaults_when_optional_fields_omitted(tmp_path):
 
 
 @pytest.mark.unit
+def test_fallback_model_defaults_to_none(tmp_path):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("input_dir: ./photos\nvault_dir: ./vault\n")
+
+    config = load_config(cfg)
+
+    assert config.fallback_model is None
+
+
+@pytest.mark.unit
+def test_fallback_model_parsed_when_set(tmp_path):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "input_dir: ./photos\nvault_dir: ./vault\nfallback_model: claude-sonnet-5\n"
+    )
+
+    config = load_config(cfg)
+
+    assert config.fallback_model == "claude-sonnet-5"
+
+
+@pytest.mark.unit
 def test_rejects_unknown_key(tmp_path):
     cfg = tmp_path / "config.yaml"
     cfg.write_text("input_dir: ./photos\nvault_dir: ./vault\napi_key: sk-should-not-be-here\n")

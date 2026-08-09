@@ -8,12 +8,17 @@ from pathlib import Path
 import anthropic
 from dotenv import load_dotenv
 
-from .config import load_config
+from .config import Config, load_config
 from .discover import discover
 from .preprocess import preprocess_image
 from .review import serve
 from .state import State
-from .transcribe import CredentialsMissing, Transcriber, TranscriptionError
+from .transcribe import (
+    CredentialsMissing,
+    Transcriber,
+    TranscriptionError,
+    TranscriptionRefused,
+)
 from .vault import PageEntry, render_notebook
 
 # A bad key, model name, or permission fails identically on every page, so abort the run
@@ -33,6 +38,39 @@ _DEFAULT_REVIEW_HOST = "0.0.0.0"
 _DEFAULT_REVIEW_PORT = 8420
 
 
+class _TranscriberPool:
+    """Primary transcriber with an optional fallback tried only on a refusal.
+
+    Both clients are created lazily so a fully-cached run makes no API calls, and the
+    fallback client is not built unless the primary actually refuses a page.
+    """
+
+    def __init__(self, config: Config):
+        self._model = config.model
+        self._fallback_model = config.fallback_model
+        self._max_tokens = config.max_tokens
+        self._primary: Transcriber | None = None
+        self._fallback: Transcriber | None = None
+
+    def transcribe(self, png_bytes: bytes) -> tuple[str, str]:
+        """Return (transcription, model that produced it). Raises on unrecoverable failure."""
+        if self._primary is None:
+            self._primary = Transcriber(self._model, self._max_tokens)
+        try:
+            return self._primary.transcribe(png_bytes), self._model
+        except TranscriptionRefused:
+            if self._fallback_model is None:
+                raise
+            print(
+                f"  .. primary ({self._model}) refused; retrying with fallback "
+                f"({self._fallback_model})",
+                file=sys.stderr,
+            )
+            if self._fallback is None:
+                self._fallback = Transcriber(self._fallback_model, self._max_tokens)
+            return self._fallback.transcribe(png_bytes), self._fallback_model
+
+
 def run(config_path: Path) -> Path | None:
     """Execute the pipeline for one input folder; returns the written .md path (None if empty)."""
     config = load_config(config_path)
@@ -46,19 +84,19 @@ def run(config_path: Path) -> Path | None:
         return None
 
     state = State(config.state_file)
-    transcriber: Transcriber | None = None  # created lazily; a fully-cached run needs no API client
+    # Both created lazily; a fully-cached run needs no API client. The fallback is only
+    # built the first time the primary refuses a page.
+    transcribers = _TranscriberPool(config)
     pages: list[PageEntry] = []
     failures: list[str] = []
 
     for page_number, image in enumerate(images, start=1):
         text = state.get_text(image.sha256)
         if text is None:
-            if transcriber is None:
-                transcriber = Transcriber(config.model, config.max_tokens)
             print(f"[{page_number}/{len(images)}] transcribing {image.path.name}", file=sys.stderr)
             png = preprocess_image(image.path)
             try:
-                text = transcriber.transcribe(png)
+                text, model_used = transcribers.transcribe(png)
             except CredentialsMissing as error:
                 raise SystemExit(str(error)) from error
             except _FATAL_API_ERRORS as error:
@@ -70,7 +108,7 @@ def run(config_path: Path) -> Path | None:
                 failures.append(image.path.name)
                 text = f"<!-- TRANSCRIPTION FAILED: {type(error).__name__}: {error} -->"
             else:
-                state.put(image.sha256, text, config.model)
+                state.put(image.sha256, text, model_used)
                 state.save()  # persist incrementally so a crash never re-bills done pages
         else:
             print(f"[{page_number}/{len(images)}] cached    {image.path.name}", file=sys.stderr)

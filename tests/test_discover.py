@@ -4,7 +4,12 @@ from datetime import datetime
 import pytest
 from PIL import Image
 
-from notebook_ocr.discover import IMAGE_EXTENSIONS, discover, read_capture_time, sha256_file
+from notebook_ocr.discover import (
+    IMAGE_EXTENSIONS,
+    discover,
+    read_capture_time,
+    sha256_file,
+)
 
 
 def _write_png(path, color=(255, 255, 255)):

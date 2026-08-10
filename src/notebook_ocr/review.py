@@ -4,6 +4,14 @@ Spot-checking a transcription needs the image the *model* saw, not the raw photo
 wrong line is as often a preprocessing failure (over-crop, bad deskew) as a model one.
 So `/api/pages/{sha256}/image` serves the preprocessed PNG that `run` would send.
 
+A page with no text is not one story but two: the model refused it, or no run has
+reached it yet. `run` records the reason in the cache, and the UI colours them apart,
+because only one of them is worth re-running.
+
+A notebook can also be given a display title, stored alongside the cache. It is a label
+for this UI only: the vault filename and page order still come from the folder name, so
+renaming can never orphan a `.md` or renumber a page.
+
 Corrections are written back into `state.json` keyed by image hash, which is what makes
 them durable: the next `run` reads the cache and reuses the correction instead of
 overwriting it. The notebook markdown is rebuilt on every save so the vault never lags
@@ -49,6 +57,10 @@ _ALL_INTERFACES = frozenset({"0.0.0.0", "::", ""})
 _ROUTE_PROBE_ADDRESS = "192.0.2.1"
 _ROUTE_PROBE_PORT = 1
 
+# A sidebar header, not a document: long enough for a real notebook name, short enough
+# that a paste accident cannot bloat state.json.
+_MAX_TITLE_LENGTH = 200
+
 
 class Page(BaseModel):
     """One reviewable page: what to show, and whether it needs attention."""
@@ -58,9 +70,13 @@ class Page(BaseModel):
     filename: str
     capture_time: str
     text: str
-    # "transcribed" (model output as-is), "edited" (human-corrected), or "missing"
-    # (never successfully transcribed, so `run` marked it as failed in the markdown).
+    # "transcribed" (model output as-is), "edited" (human-corrected), "failed" (a run
+    # tried and could not), or "missing" (never attempted, so no run has reached it yet).
     status: str
+    # Why a failed page failed: "refused", "truncated", or "api_error". None otherwise.
+    # A refusal will not clear on a re-run, so it is not the same call to action as a
+    # page that simply has not been transcribed yet.
+    failure: str | None = None
     model: str | None = None
 
 
@@ -74,9 +90,19 @@ class Notebook(BaseModel):
     """Everything the UI needs to render a review session."""
 
     notebook: str
+    # Display label shown in place of the folder name; equal to `notebook` until renamed.
+    # Deliberately cosmetic: the vault filename and page order still come from the folder,
+    # so renaming cannot orphan a `.md`.
+    title: str
     source_dir: str
     vault_file: str
     pages: list[Page]
+
+
+class Title(BaseModel):
+    """A notebook display title submitted from the review UI. Blank restores the folder name."""
+
+    title: str = Field(max_length=_MAX_TITLE_LENGTH)
 
 
 @lru_cache(maxsize=_IMAGE_CACHE_SIZE)
@@ -85,22 +111,24 @@ def _preprocessed_png(path: Path, sha256: str) -> bytes:
     return preprocess_image(path)
 
 
-def _status(text: str | None, entry: dict[str, str]) -> str:
+def _status(text: str | None, entry: dict[str, str], failure: dict[str, str] | None) -> str:
     if text is None:
-        return "missing"
+        return "failed" if failure else "missing"
     return "edited" if entry.get("edited_at") else "transcribed"
 
 
 def _to_page(page_number: int, image: DiscoveredImage, state: State) -> Page:
     entry = state.get_entry(image.sha256) or {}
     text = state.get_text(image.sha256)
+    failure = state.get_failure(image.sha256)
     return Page(
         page_number=page_number,
         sha256=image.sha256,
         filename=image.path.name,
         capture_time=image.capture_time.isoformat(sep=" ", timespec="seconds"),
         text=text or "",
-        status=_status(text, entry),
+        status=_status(text, entry, failure),
+        failure=failure["reason"] if failure else None,
         model=entry.get("model"),
     )
 
@@ -133,7 +161,7 @@ def create_app(config: Config) -> FastAPI:
                 page_number=number,
                 filename=image.path.name,
                 capture_time=image.capture_time,
-                text=state.get_text(image.sha256) or _missing_marker(image.path.name),
+                text=state.get_text(image.sha256) or _blank_marker(image, state),
             )
             for number, image in enumerate(images, start=1)
         ]
@@ -143,15 +171,26 @@ def create_app(config: Config) -> FastAPI:
     def index() -> FileResponse:
         return FileResponse(_UI_FILE, media_type="text/html")
 
-    @app.get("/api/notebook")
-    def read_notebook() -> Notebook:
-        state = State(config.state_file)
+    def _notebook(state: State) -> Notebook:
         return Notebook(
             notebook=source_dir.name,
+            title=state.get_title(str(source_dir)) or source_dir.name,
             source_dir=str(source_dir),
             vault_file=str(config.vault_dir / f"{source_dir.name}.md"),
             pages=[_to_page(number, image, state) for number, image in enumerate(images, start=1)],
         )
+
+    @app.get("/api/notebook")
+    def read_notebook() -> Notebook:
+        return _notebook(State(config.state_file))
+
+    @app.put("/api/notebook/title")
+    def save_title(title: Title) -> Notebook:
+        # Re-read for the same reason a correction does: the file is the source of truth.
+        state = State(config.state_file)
+        state.put_title(str(source_dir), title.title)
+        state.save()
+        return _notebook(state)
 
     @app.get("/api/pages/{sha256}/image")
     def read_page_image(sha256: str) -> Response:
@@ -176,8 +215,16 @@ def create_app(config: Config) -> FastAPI:
     return app
 
 
-def _missing_marker(filename: str) -> str:
-    return f"<!-- NOT TRANSCRIBED: {filename} -->"
+def _blank_marker(image: DiscoveredImage, state: State) -> str:
+    """The placeholder for a page with no text, saying why when the reason is known.
+
+    Matches what `run` writes for a failed page, so rebuilding after a correction does not
+    quietly downgrade "the model refused this" to "nobody has transcribed this".
+    """
+    failure = state.get_failure(image.sha256)
+    if failure:
+        return f"<!-- TRANSCRIPTION FAILED: {failure['detail'] or failure['reason']} -->"
+    return f"<!-- NOT TRANSCRIBED: {image.path.name} -->"
 
 
 def lan_address() -> str | None:

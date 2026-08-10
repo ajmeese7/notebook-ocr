@@ -68,6 +68,56 @@ def test_transcribed_and_untranscribed_pages_are_distinguished(client):
 
 
 @pytest.mark.unit
+def test_refused_page_is_distinguished_from_one_never_attempted(client):
+    """A refusal will not clear on a re-run; an untried page will. They are not the same call to action."""
+    untried = client.get("/api/notebook").json()["pages"][1]
+    state = State(client.config.state_file)
+    state.put_failure(untried["sha256"], "refused", "TranscriptionRefused: model refused page")
+    state.save()
+
+    page = client.get("/api/notebook").json()["pages"][1]
+
+    assert page["status"] == "failed"
+    assert page["failure"] == "refused"
+
+
+@pytest.mark.unit
+def test_page_no_run_has_reached_reports_no_failure(client):
+    page = client.get("/api/notebook").json()["pages"][1]
+
+    assert page["status"] == "missing"
+    assert page["failure"] is None
+
+
+@pytest.mark.unit
+def test_rebuilt_markdown_keeps_the_failure_reason(client):
+    """Rebuilding after a correction must not downgrade "the model refused" to "not transcribed"."""
+    pages = client.get("/api/notebook").json()["pages"]
+    state = State(client.config.state_file)
+    state.put_failure(pages[1]["sha256"], "refused", "TranscriptionRefused: model refused page")
+    state.save()
+
+    client.put(f"/api/pages/{pages[0]['sha256']}", json={"text": "corrected"})
+
+    markdown = (client.config.vault_dir / "field-notes.md").read_text()
+    assert "<!-- TRANSCRIPTION FAILED: TranscriptionRefused: model refused page -->" in markdown
+    assert "NOT TRANSCRIBED" not in markdown
+
+
+@pytest.mark.unit
+def test_correcting_a_refused_page_clears_the_flag(client):
+    sha = client.get("/api/notebook").json()["pages"][1]["sha256"]
+    state = State(client.config.state_file)
+    state.put_failure(sha, "refused", "TranscriptionRefused: model refused page")
+    state.save()
+
+    page = client.put(f"/api/pages/{sha}", json={"text": "typed out by hand"}).json()
+
+    assert page["status"] == "edited"
+    assert page["failure"] is None
+
+
+@pytest.mark.unit
 def test_page_image_endpoint_serves_a_decodable_png(client):
     sha = client.get("/api/notebook").json()["pages"][0]["sha256"]
 
@@ -144,6 +194,64 @@ def test_empty_correction_is_rejected(client):
     sha = client.get("/api/notebook").json()["pages"][0]["sha256"]
 
     assert client.put(f"/api/pages/{sha}", json={"text": ""}).status_code == 422
+
+
+@pytest.mark.unit
+def test_title_defaults_to_the_folder_name(client):
+    body = client.get("/api/notebook").json()
+
+    assert body["title"] == "field-notes"
+    assert body["notebook"] == "field-notes"
+
+
+@pytest.mark.unit
+def test_renaming_persists_the_title_without_touching_page_identity(client):
+    client.put("/api/notebook/title", json={"title": "Field Notes, 2024"})
+
+    body = client.get("/api/notebook").json()
+    assert body["title"] == "Field Notes, 2024"
+    assert body["notebook"] == "field-notes"
+    assert body["vault_file"].endswith("field-notes.md")
+
+
+@pytest.mark.unit
+def test_renaming_does_not_rename_the_vault_file(client):
+    """A display title is cosmetic: renaming must never orphan the notebook markdown."""
+    sha = client.get("/api/notebook").json()["pages"][0]["sha256"]
+    client.put("/api/notebook/title", json={"title": "Renamed"})
+
+    client.put(f"/api/pages/{sha}", json={"text": "corrected"})
+
+    assert (client.config.vault_dir / "field-notes.md").exists()
+    assert list(client.config.vault_dir.glob("*.md")) == [
+        client.config.vault_dir / "field-notes.md"
+    ]
+
+
+@pytest.mark.unit
+def test_blank_title_restores_the_folder_name(client):
+    client.put("/api/notebook/title", json={"title": "Renamed"})
+
+    body = client.put("/api/notebook/title", json={"title": "  "}).json()
+
+    assert body["title"] == "field-notes"
+    assert "notebooks" in json.loads(client.config.state_file.read_text())
+
+
+@pytest.mark.unit
+def test_overlong_title_is_rejected(client):
+    response = client.put("/api/notebook/title", json={"title": "x" * 5000})
+
+    assert response.status_code == 422
+
+
+@pytest.mark.unit
+def test_renaming_leaves_cached_transcriptions_intact(client):
+    sha = client.get("/api/notebook").json()["pages"][0]["sha256"]
+
+    client.put("/api/notebook/title", json={"title": "Renamed"})
+
+    assert State(client.config.state_file).get_text(sha) == "page one text"
 
 
 @pytest.mark.unit

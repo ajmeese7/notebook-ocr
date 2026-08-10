@@ -102,11 +102,17 @@ def run(config_path: Path) -> Path | None:
             except _FATAL_API_ERRORS as error:
                 raise SystemExit(f"aborting: {type(error).__name__}: {error}") from error
             except (TranscriptionError, anthropic.APIError) as error:
-                # Don't cache a failure and don't abandon the pages that did work: mark
-                # this one inline so a re-run retries only it.
+                # Don't cache a result and don't abandon the pages that did work: mark
+                # this one inline so a re-run retries only it. The reason is recorded in
+                # state (without any text, so the page stays a cache miss) because it is
+                # otherwise lost when the run ends, and review has no way to tell a page
+                # the model refused from one nobody has transcribed yet.
                 print(f"  !! {image.path.name}: {error}", file=sys.stderr)
                 failures.append(image.path.name)
-                text = f"<!-- TRANSCRIPTION FAILED: {type(error).__name__}: {error} -->"
+                detail = f"{type(error).__name__}: {error}"
+                state.put_failure(image.sha256, getattr(error, "reason", "api_error"), detail)
+                state.save()
+                text = f"<!-- TRANSCRIPTION FAILED: {detail} -->"
             else:
                 state.put(image.sha256, text, model_used)
                 state.save()  # persist incrementally so a crash never re-bills done pages

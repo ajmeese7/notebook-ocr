@@ -4,6 +4,10 @@ Storing each page's transcription (not just a "seen" flag) is what makes re-runs
 cheap and complete: a re-run re-transcribes only new images, yet the assembled notebook
 always contains every page. Keyed by SHA-256 of the file bytes, so identical content
 resolves to the same transcription regardless of folder or filename.
+
+The same file also holds per-notebook display titles, keyed by source folder. They are
+labels for the review UI only: the vault filename and every page identity still come from
+the folder name, so renaming a notebook can never orphan a `.md` or renumber a page.
 """
 
 import json
@@ -19,9 +23,12 @@ class State:
     def __init__(self, path: Path):
         self.path = path
         self._pages: dict[str, dict[str, str]] = {}
+        self._notebooks: dict[str, dict[str, str]] = {}
         if path.exists():
             raw = json.loads(path.read_text())
             self._pages = raw.get("pages", {})
+            notebooks = raw.get("notebooks")
+            self._notebooks = notebooks if isinstance(notebooks, dict) else {}
 
     def get_entry(self, sha256: str) -> dict[str, str] | None:
         """The full stored record for this content hash, or None if absent or malformed."""
@@ -48,6 +55,33 @@ class State:
             "transcribed_at": datetime.now().astimezone().isoformat(),
         }
 
+    def get_failure(self, sha256: str) -> dict[str, str] | None:
+        """Why this page has no transcription, or None if it has one or was never tried.
+
+        A page the model refused is not the same as one nobody has transcribed yet: the
+        refusal will not clear by itself, so it is worth surfacing differently.
+        """
+        entry = self.get_entry(sha256)
+        if entry is None or self.get_text(sha256) is not None:
+            return None
+        reason = entry.get("failed")
+        if not isinstance(reason, str) or not reason:
+            return None
+        return {"reason": reason, "detail": entry.get("failed_detail", "")}
+
+    def put_failure(self, sha256: str, reason: str, detail: str) -> None:
+        """Record why a page failed, without caching a result.
+
+        No `text` is stored, so `get_text` still misses and a re-run retries the page;
+        what is kept is the reason, which is otherwise lost the moment the run ends.
+        Only called when the page has no usable text, so nothing is overwritten.
+        """
+        self._pages[sha256] = {
+            "failed": reason,
+            "failed_detail": detail,
+            "failed_at": datetime.now().astimezone().isoformat(),
+        }
+
     def put_correction(self, sha256: str, text: str) -> dict[str, str]:
         """Overwrite a page's text with a human correction, returning the updated entry.
 
@@ -59,13 +93,41 @@ class State:
         entry = dict(self.get_entry(sha256) or {})
         entry["text"] = text
         entry["edited_at"] = datetime.now().astimezone().isoformat()
+        # Typing a refused page out by hand resolves the failure; leaving the reason
+        # behind would keep flagging a page that now has a transcription.
+        for key in ("failed", "failed_detail", "failed_at"):
+            entry.pop(key, None)
         self._pages[sha256] = entry
         return entry
+
+    def get_title(self, notebook_key: str) -> str | None:
+        """Display title for a notebook, or None when it has never been renamed.
+
+        Keyed by absolute source folder so two notebooks with the same folder name in
+        different places do not share a title.
+        """
+        entry = self._notebooks.get(notebook_key)
+        if not isinstance(entry, dict):
+            return None
+        title = entry.get("title")
+        return title if isinstance(title, str) and title.strip() else None
+
+    def put_title(self, notebook_key: str, title: str) -> None:
+        """Set a notebook's display title, or clear it when given blank text."""
+        entry = dict(self._notebooks.get(notebook_key) or {})
+        if title.strip():
+            entry["title"] = title.strip()
+        else:
+            entry.pop("title", None)
+        if entry:
+            self._notebooks[notebook_key] = entry
+        else:
+            self._notebooks.pop(notebook_key, None)
 
     def save(self) -> None:
         """Persist atomically via a temp file so a crash mid-write never corrupts state.json."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        payload = {"version": _VERSION, "pages": self._pages}
+        payload = {"version": _VERSION, "pages": self._pages, "notebooks": self._notebooks}
         tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
         tmp.replace(self.path)

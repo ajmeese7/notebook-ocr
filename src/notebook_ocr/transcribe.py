@@ -33,15 +33,26 @@ Output only the transcription."""
 
 
 class TranscriptionError(RuntimeError):
-    """A page could not be transcribed into a result worth caching."""
+    """A page could not be transcribed into a result worth caching.
+
+    `reason` is the slug recorded in `state.json` and shown in the review UI. A refusal
+    is worth telling apart from the rest: it will not clear on a re-run, while a
+    truncation or a transport error usually will.
+    """
+
+    reason = "failed"
 
 
 class TranscriptionRefused(TranscriptionError):
     """The model declined to transcribe a page (stop_reason == 'refusal')."""
 
+    reason = "refused"
+
 
 class TranscriptionTruncated(TranscriptionError):
     """Output hit max_tokens, so the transcription is cut off mid-page."""
+
+    reason = "truncated"
 
 
 class CredentialsMissing(RuntimeError):

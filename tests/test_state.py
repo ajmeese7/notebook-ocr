@@ -61,6 +61,110 @@ def test_blank_cached_text_is_treated_as_a_cache_miss(tmp_path):
 
 
 @pytest.mark.unit
+def test_recorded_failure_is_still_a_cache_miss_so_a_rerun_retries(tmp_path):
+    """Recording why a page failed must not make it look transcribed."""
+    state = State(tmp_path / "state.json")
+    state.put_failure("h1", "refused", "TranscriptionRefused: model refused page")
+
+    assert state.get_text("h1") is None
+    assert state.get_failure("h1")["reason"] == "refused"
+
+
+@pytest.mark.unit
+def test_failure_reason_survives_a_reload(tmp_path):
+    path = tmp_path / "state.json"
+    state = State(path)
+    state.put_failure("h1", "truncated", "TranscriptionTruncated: hit max_tokens")
+    state.save()
+
+    assert State(path).get_failure("h1") == {
+        "reason": "truncated",
+        "detail": "TranscriptionTruncated: hit max_tokens",
+    }
+
+
+@pytest.mark.unit
+def test_a_transcribed_page_reports_no_failure(tmp_path):
+    state = State(tmp_path / "state.json")
+    state.put("h1", "page one", "claude-opus-5")
+
+    assert state.get_failure("h1") is None
+
+
+@pytest.mark.unit
+def test_successful_retranscription_clears_an_earlier_failure(tmp_path):
+    state = State(tmp_path / "state.json")
+    state.put_failure("h1", "refused", "TranscriptionRefused: model refused page")
+
+    state.put("h1", "page one", "claude-opus-5")
+
+    assert state.get_failure("h1") is None
+    assert state.get_text("h1") == "page one"
+
+
+@pytest.mark.unit
+def test_correcting_a_failed_page_clears_its_failure(tmp_path):
+    """Typing a refused page out by hand resolves it; it must stop being flagged."""
+    state = State(tmp_path / "state.json")
+    state.put_failure("h1", "refused", "TranscriptionRefused: model refused page")
+
+    state.put_correction("h1", "typed out by hand")
+
+    assert state.get_failure("h1") is None
+    assert state.get_text("h1") == "typed out by hand"
+
+
+@pytest.mark.unit
+def test_unknown_hash_has_no_failure(tmp_path):
+    assert State(tmp_path / "state.json").get_failure("nope") is None
+
+
+@pytest.mark.unit
+def test_notebook_title_roundtrips_across_instances(tmp_path):
+    path = tmp_path / "state.json"
+    state = State(path)
+    state.put_title("/photos/cyiq_green", "CYIQ, green cover")
+    state.save()
+
+    assert State(path).get_title("/photos/cyiq_green") == "CYIQ, green cover"
+
+
+@pytest.mark.unit
+def test_unset_notebook_title_is_none(tmp_path):
+    assert State(tmp_path / "state.json").get_title("/photos/cyiq_green") is None
+
+
+@pytest.mark.unit
+def test_blank_title_clears_a_previous_rename(tmp_path):
+    """Clearing the field in the UI must restore the folder name, not store an empty label."""
+    state = State(tmp_path / "state.json")
+    state.put_title("/photos/cyiq_green", "CYIQ")
+    state.put_title("/photos/cyiq_green", "   ")
+
+    assert state.get_title("/photos/cyiq_green") is None
+
+
+@pytest.mark.unit
+def test_titles_are_scoped_to_the_source_folder(tmp_path):
+    state = State(tmp_path / "state.json")
+    state.put_title("/photos/notes", "Work")
+
+    assert state.get_title("/archive/notes") is None
+
+
+@pytest.mark.unit
+def test_state_file_without_notebooks_key_still_loads(tmp_path):
+    """State files written before titles existed must keep working untouched."""
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"version": 1, "pages": {"h1": {"text": "page one"}}}))
+
+    state = State(path)
+
+    assert state.get_text("h1") == "page one"
+    assert state.get_title("/photos/notes") is None
+
+
+@pytest.mark.unit
 def test_save_is_atomic_leaving_no_temp_file(tmp_path):
     path = tmp_path / "state.json"
     state = State(path)

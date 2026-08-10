@@ -15,6 +15,10 @@
         --edited: #9ece6a;
         --missing: #f7768e;
         --dirty: #e0af68;
+        /* Same amber as --dirty on purpose: both mean "needs attention", not "error". */
+        --pending: #e0af68;
+        --sidebar-width: 240px;
+        --preview-height: 260px;
       }
       * { box-sizing: border-box; }
       /* Every track below is minmax(0, ...) on purpose: a bare `1fr` has a min-content
@@ -24,7 +28,7 @@
         margin: 0;
         height: 100vh;
         display: grid;
-        grid-template-columns: 240px minmax(0, 1fr);
+        grid-template-columns: var(--sidebar-width) 5px minmax(0, 1fr);
         grid-template-rows: minmax(0, 1fr);
         background: var(--bg);
         color: var(--text);
@@ -42,6 +46,28 @@
         background: var(--bg);
       }
       #notebook-name small { display: block; color: var(--muted); font-weight: 400; }
+      /* An input, not a label, so renaming is one click with no edit-mode to discover.
+         Borderless until focused: it should read as the heading it replaces. */
+      #title {
+        width: 100%;
+        border: 1px solid transparent;
+        border-radius: 4px;
+        margin: -3px -5px 0;
+        padding: 2px 4px;
+        background: none;
+        color: inherit;
+        font: inherit;
+      }
+      #title:hover:not(:focus) { border-color: var(--border); }
+      #title:focus { outline: none; border-color: var(--accent); background: var(--panel); }
+
+      /* Drag to resize the sidebar; double-click to restore the default width. */
+      #sidebar-resizer { cursor: col-resize; background: var(--border); }
+      #sidebar-resizer:hover, body.resizing #sidebar-resizer { background: var(--accent); }
+      /* A pointer capture drag would otherwise select page names as it swept across them. */
+      body.resizing { user-select: none; }
+      body.sidebar-collapsed { grid-template-columns: minmax(0, 1fr); }
+      body.sidebar-collapsed #sidebar, body.sidebar-collapsed #sidebar-resizer { display: none; }
       .page-item {
         display: flex;
         gap: 8px;
@@ -57,7 +83,8 @@
       .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; align-self: center; }
       .dot.transcribed { background: var(--muted); }
       .dot.edited { background: var(--edited); }
-      .dot.missing { background: var(--missing); }
+      .dot.failed { background: var(--missing); }
+      .dot.missing { background: var(--pending); }
       .dot.dirty { background: var(--dirty); }
 
       /* Side-by-side panes */
@@ -71,6 +98,10 @@
       }
       #toolbar .spacer { flex: 1; }
       #meta { color: var(--muted); font-size: 13px; }
+      /* Only the filename is coloured: the capture time and the note beside it are not
+         the thing being flagged, and a whole red toolbar row reads as an alarm. */
+      #meta .name.failed { color: var(--missing); }
+      #meta .name.missing { color: var(--pending); }
       button {
         background: var(--panel);
         color: var(--text);
@@ -111,6 +142,12 @@
         border-left: 1px solid var(--border);
         min-width: 0;
       }
+      /* Drawings split off the bottom of the transcription rather than taking a column of
+         their own: they belong to the text they sit in, and a third column would squeeze
+         both the page image and the lines being corrected. */
+      body.preview-open #text-pane {
+        grid-template-rows: minmax(0, 1fr) 5px var(--preview-height);
+      }
       #text {
         width: 100%;
         height: 100%;
@@ -123,6 +160,44 @@
         tab-size: 2;
       }
       #text:focus { outline: none; }
+      /* Drawing previews */
+      #preview-pane, #preview-resizer { display: none; }
+      #preview-resizer { cursor: row-resize; background: var(--border); }
+      #preview-resizer:hover, body.resizing #preview-resizer { background: var(--accent); }
+      body.preview-open #preview-resizer { display: block; }
+      body.preview-open #preview-pane {
+        display: flex;
+        flex-wrap: wrap;
+        align-content: flex-start;
+        gap: 12px;
+        overflow-y: auto;
+        min-height: 0;
+        padding: 12px;
+      }
+      .drawing {
+        width: 15rem;
+        margin: 0;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        overflow: hidden;
+        cursor: pointer;
+      }
+      .drawing:hover { border-color: var(--accent); }
+      /* The prompt asks for black strokes on a transparent background, so a drawing is
+         invisible on this theme without a light card behind it. */
+      .drawing img {
+        display: block;
+        width: 100%;
+        height: auto;
+        /* A tall diagram would otherwise fill the pane and hide the ones after it. */
+        max-height: 12rem;
+        object-fit: contain;
+        background: #fff;
+        padding: 8px;
+      }
+      .drawing figcaption { padding: 6px 8px; color: var(--muted); font-size: 12px; }
+      .drawing.broken figcaption { color: var(--missing); }
+      #preview-empty { color: var(--muted); font-size: 13px; }
       #status { color: var(--muted); font-size: 13px; min-width: 90px; }
       #status.dirty { color: var(--dirty); }
       #status.error { color: var(--missing); }
@@ -130,17 +205,24 @@
   </head>
   <body>
     <aside id="sidebar">
-      <div id="notebook-name"></div>
+      <div id="notebook-name">
+        <input id="title" spellcheck="false" title="Rename this notebook (display only)" />
+        <small id="page-count"></small>
+      </div>
       <div id="page-list"></div>
     </aside>
+    <div id="sidebar-resizer" role="separator" aria-orientation="vertical"
+         title="Drag to resize, double-click to reset"></div>
 
     <section id="main">
       <div id="toolbar">
+        <button id="toggle-sidebar" title="Show/hide the page list ([)">☰</button>
         <button id="prev" title="Previous page (k / ←)">←</button>
         <button id="next" title="Next page (j / →)">→</button>
         <span id="meta"></span>
         <span class="spacer"></span>
         <span id="status"></span>
+        <button id="toggle-preview" title="Show/hide rendered drawings (p)">Drawings</button>
         <button id="revert" title="Discard unsaved edits">Revert</button>
         <button id="save" title="Save correction (ctrl-s)">Save</button>
       </div>
@@ -148,18 +230,33 @@
         <div id="image-pane"><img id="page-image" alt="" /></div>
         <div id="text-pane">
           <textarea id="text" spellcheck="false" placeholder="No transcription for this page."></textarea>
+          <div id="preview-resizer" role="separator" aria-orientation="horizontal"
+               title="Drag to resize, double-click to reset"></div>
+          <div id="preview-pane"></div>
         </div>
       </div>
     </section>
 
     <script>
       const el = (id) => document.getElementById(id);
+      // Draggable pane sizes: default, and the bounds a drag is clamped to.
+      const SIDEBAR = { name: "sidebarWidth", css: "--sidebar-width", value: 240, min: 160, max: 520 };
+      const PREVIEW = { name: "previewHeight", css: "--preview-height", value: 260, min: 120, max: 700 };
+      // Re-rendering previews on every keystroke would flicker the images while typing.
+      const PREVIEW_DEBOUNCE_MS = 200;
+      // Either an inline drawing or the comment the model leaves when it declines to
+      // vectorize one; the capture group is the description, and is absent for an <svg>.
+      const DRAWING_PATTERN = /<svg\b[\s\S]*?<\/svg>|<!--\s*drawing:\s*([\s\S]*?)-->/gi;
+
       // `saved` is the last known server text; the textarea diverging from it means dirty.
       let pages = [];
       // -1 until the first page is selected, so the initial select(0) is not mistaken for
       // a redundant re-click of the already-current page.
       let index = -1;
       let saved = "";
+      // Last title the server acknowledged, so a failed or cancelled rename can revert.
+      let savedTitle = "";
+      let previewTimer = 0;
 
       const current = () => pages[index];
       const isDirty = () => current() && el("text").value !== saved;
@@ -167,12 +264,17 @@
       async function load() {
         const res = await fetch("/api/notebook");
         if (!res.ok) return setStatus("failed to load notebook", "error");
-        const data = await res.json();
-        pages = data.pages;
-        el("notebook-name").innerHTML =
-          `${escapeHtml(data.notebook)}<small>${pages.length} page(s)</small>`;
+        applyNotebook(await res.json());
         renderList();
         if (pages.length) select(0);
+      }
+
+      function applyNotebook(data) {
+        pages = data.pages;
+        savedTitle = data.title;
+        el("title").value = data.title;
+        el("title").placeholder = data.notebook;
+        el("page-count").textContent = `${pages.length} page(s)`;
       }
 
       function renderList() {
@@ -201,6 +303,7 @@
         el("image-pane").classList.remove("zoomed");
         renderMeta();
         renderList();
+        renderPreview();
         refresh();
       }
 
@@ -208,8 +311,12 @@
         const page = current();
         const note =
           page.status === "edited" ? " · edited" :
+          page.status === "failed" ? ` · ${page.failure ?? "failed"}` :
           page.status === "missing" ? " · not transcribed" : "";
-        el("meta").textContent = `${page.filename} · ${page.capture_time}${note}`;
+        const name = document.createElement("span");
+        name.className = `name ${page.status}`;
+        name.textContent = page.filename;
+        el("meta").replaceChildren(name, ` · ${page.capture_time}${note}`);
       }
 
       function refresh() {
@@ -247,18 +354,163 @@
         setStatus("saved");
       }
 
+      async function saveTitle() {
+        const title = el("title").value.trim();
+        if (title === savedTitle) return;
+        const res = await fetch("/api/notebook/title", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title }),
+        });
+        if (!res.ok) {
+          el("title").value = savedTitle;
+          return setStatus("rename failed", "error");
+        }
+        applyNotebook(await res.json());
+        setStatus("renamed");
+      }
+
+      function drawingsIn(text) {
+        return [...text.matchAll(DRAWING_PATTERN)].map((match) => ({
+          source: match[0],
+          // null for an <svg>; a (possibly empty) string for a "drawing:" comment.
+          description: match[1] === undefined ? null : match[1].trim(),
+          start: match.index,
+          end: match.index + match[0].length,
+        }));
+      }
+
+      function renderPreview() {
+        const drawings = drawingsIn(el("text").value);
+        el("toggle-preview").textContent =
+          drawings.length ? `Drawings (${drawings.length})` : "Drawings";
+        if (!document.body.classList.contains("preview-open")) return;
+        if (!drawings.length) {
+          const empty = document.createElement("div");
+          empty.id = "preview-empty";
+          empty.textContent = "No drawings on this page.";
+          return el("preview-pane").replaceChildren(empty);
+        }
+        el("preview-pane").replaceChildren(...drawings.map(drawingCard));
+      }
+
+      function drawingCard(drawing, position) {
+        const card = document.createElement("figure");
+        card.className = "drawing";
+        card.title = "Click to select this drawing in the transcription";
+        const caption = document.createElement("figcaption");
+        caption.textContent = `drawing ${position + 1}`;
+        if (drawing.description === null) {
+          const image = document.createElement("img");
+          // A data-URL <img> renders the SVG without giving model output a foothold in
+          // this document: no scripts, no external fetches, no reach into the page.
+          const source = encodeURIComponent(withNamespace(drawing.source));
+          image.src = `data:image/svg+xml;charset=utf-8,${source}`;
+          image.alt = `drawing ${position + 1}`;
+          // Malformed SVG must say so rather than leaving a silent blank card.
+          image.onerror = () => {
+            card.classList.add("broken");
+            caption.textContent = `drawing ${position + 1}: malformed SVG, cannot render`;
+            image.remove();
+          };
+          card.append(image);
+        } else {
+          card.classList.add("broken");
+          caption.textContent = drawing.description
+            ? `not vectorized: ${drawing.description}`
+            : "not vectorized";
+        }
+        card.append(caption);
+        card.onclick = () => revealInText(drawing);
+        return card;
+      }
+
+      function withNamespace(svg) {
+        // Inline in markdown an <svg> needs no xmlns, but as its own document behind a
+        // data URL it does, and the model does not always emit one. Without this a
+        // perfectly good drawing renders as a broken image.
+        return /\sxmlns\s*=/.test(svg)
+          ? svg
+          : svg.replace(/^<svg\b/i, '<svg xmlns="http://www.w3.org/2000/svg"');
+      }
+
+      function revealInText(drawing) {
+        const field = el("text");
+        field.focus();
+        field.setSelectionRange(drawing.start, drawing.end);
+        // Selecting does not scroll a textarea, and there is no per-character geometry to
+        // measure, so approximate the offset by its share of the text and centre it.
+        const share = drawing.start / Math.max(field.value.length, 1);
+        field.scrollTop = Math.max(0, share * field.scrollHeight - field.clientHeight / 3);
+      }
+
+      function setPaneSize(pane, pixels) {
+        const size = Math.min(Math.max(Math.round(pixels), pane.min), pane.max);
+        document.documentElement.style.setProperty(pane.css, `${size}px`);
+        localStorage.setItem(pane.name, size);
+      }
+
+      function setCollapsed(collapsed) {
+        document.body.classList.toggle("sidebar-collapsed", collapsed);
+        localStorage.setItem("sidebarCollapsed", collapsed ? "1" : "");
+      }
+
+      function setPreviewOpen(open) {
+        document.body.classList.toggle("preview-open", open);
+        localStorage.setItem("previewOpen", open ? "1" : "");
+        renderPreview();
+      }
+
       function escapeHtml(value) {
         return value.replace(/[&<>"']/g, (c) =>
           ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
         );
       }
 
-      el("text").addEventListener("input", refresh);
+      el("text").addEventListener("input", () => {
+        refresh();
+        clearTimeout(previewTimer);
+        previewTimer = setTimeout(renderPreview, PREVIEW_DEBOUNCE_MS);
+      });
+      el("title").addEventListener("blur", saveTitle);
+      el("title").addEventListener("keydown", (event) => {
+        if (event.key === "Enter") el("title").blur();
+        if (event.key === "Escape") {
+          el("title").value = savedTitle;
+          el("title").blur();
+        }
+      });
+      el("toggle-sidebar").onclick = () =>
+        setCollapsed(!document.body.classList.contains("sidebar-collapsed"));
+      el("toggle-preview").onclick = () =>
+        setPreviewOpen(!document.body.classList.contains("preview-open"));
       el("save").onclick = save;
       el("revert").onclick = () => { el("text").value = saved; refresh(); };
       el("prev").onclick = () => select(Math.max(index - 1, 0));
       el("next").onclick = () => select(Math.min(index + 1, pages.length - 1));
       el("page-image").onclick = () => el("image-pane").classList.toggle("zoomed");
+
+      function wireResizer(handle, pane, sizeFromPointer) {
+        handle.addEventListener("pointerdown", (event) => {
+          // Capture so the drag keeps tracking once the pointer outruns the 5px handle.
+          event.preventDefault();
+          handle.setPointerCapture(event.pointerId);
+          document.body.classList.add("resizing");
+        });
+        handle.addEventListener("pointermove", (event) => {
+          if (!document.body.classList.contains("resizing")) return;
+          setPaneSize(pane, sizeFromPointer(event));
+        });
+        for (const done of ["pointerup", "pointercancel"]) {
+          handle.addEventListener(done, () => document.body.classList.remove("resizing"));
+        }
+        handle.addEventListener("dblclick", () => setPaneSize(pane, pane.value));
+      }
+
+      wireResizer(el("sidebar-resizer"), SIDEBAR, (event) =>
+        event.clientX - el("sidebar").getBoundingClientRect().left);
+      wireResizer(el("preview-resizer"), PREVIEW, (event) =>
+        el("text-pane").getBoundingClientRect().bottom - event.clientY);
 
       document.addEventListener("keydown", (event) => {
         if ((event.ctrlKey || event.metaKey) && event.key === "s") {
@@ -266,11 +518,21 @@
           if (!el("save").disabled) save();
           return;
         }
-        // Navigation keys must not hijack typing in the textarea.
-        if (event.target === el("text") || event.ctrlKey || event.metaKey || event.altKey) return;
+        // Shortcuts must not hijack typing in the transcription or the title.
+        const typing = event.target instanceof HTMLElement
+          && event.target.matches("input, textarea");
+        if (typing || event.ctrlKey || event.metaKey || event.altKey) return;
         if (event.key === "j" || event.key === "ArrowRight") el("next").click();
         if (event.key === "k" || event.key === "ArrowLeft") el("prev").click();
+        if (event.key === "[") el("toggle-sidebar").click();
+        if (event.key === "p") el("toggle-preview").click();
       });
+
+      for (const pane of [SIDEBAR, PREVIEW]) {
+        setPaneSize(pane, Number(localStorage.getItem(pane.name)) || pane.value);
+      }
+      setCollapsed(Boolean(localStorage.getItem("sidebarCollapsed")));
+      setPreviewOpen(Boolean(localStorage.getItem("previewOpen")));
 
       window.addEventListener("beforeunload", (event) => {
         if (isDirty()) event.preventDefault();

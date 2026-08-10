@@ -4,6 +4,10 @@ Spot-checking a transcription needs the image the *model* saw, not the raw photo
 wrong line is as often a preprocessing failure (over-crop, bad deskew) as a model one.
 So `/api/pages/{sha256}/image` serves the preprocessed PNG that `run` would send.
 
+A notebook can also be given a display title, stored alongside the cache. It is a label
+for this UI only: the vault filename and page order still come from the folder name, so
+renaming can never orphan a `.md` or renumber a page.
+
 Corrections are written back into `state.json` keyed by image hash, which is what makes
 them durable: the next `run` reads the cache and reuses the correction instead of
 overwriting it. The notebook markdown is rebuilt on every save so the vault never lags
@@ -49,6 +53,10 @@ _ALL_INTERFACES = frozenset({"0.0.0.0", "::", ""})
 _ROUTE_PROBE_ADDRESS = "192.0.2.1"
 _ROUTE_PROBE_PORT = 1
 
+# A sidebar header, not a document: long enough for a real notebook name, short enough
+# that a paste accident cannot bloat state.json.
+_MAX_TITLE_LENGTH = 200
+
 
 class Page(BaseModel):
     """One reviewable page: what to show, and whether it needs attention."""
@@ -74,9 +82,19 @@ class Notebook(BaseModel):
     """Everything the UI needs to render a review session."""
 
     notebook: str
+    # Display label shown in place of the folder name; equal to `notebook` until renamed.
+    # Deliberately cosmetic: the vault filename and page order still come from the folder,
+    # so renaming cannot orphan a `.md`.
+    title: str
     source_dir: str
     vault_file: str
     pages: list[Page]
+
+
+class Title(BaseModel):
+    """A notebook display title submitted from the review UI. Blank restores the folder name."""
+
+    title: str = Field(max_length=_MAX_TITLE_LENGTH)
 
 
 @lru_cache(maxsize=_IMAGE_CACHE_SIZE)
@@ -143,15 +161,26 @@ def create_app(config: Config) -> FastAPI:
     def index() -> FileResponse:
         return FileResponse(_UI_FILE, media_type="text/html")
 
-    @app.get("/api/notebook")
-    def read_notebook() -> Notebook:
-        state = State(config.state_file)
+    def _notebook(state: State) -> Notebook:
         return Notebook(
             notebook=source_dir.name,
+            title=state.get_title(str(source_dir)) or source_dir.name,
             source_dir=str(source_dir),
             vault_file=str(config.vault_dir / f"{source_dir.name}.md"),
             pages=[_to_page(number, image, state) for number, image in enumerate(images, start=1)],
         )
+
+    @app.get("/api/notebook")
+    def read_notebook() -> Notebook:
+        return _notebook(State(config.state_file))
+
+    @app.put("/api/notebook/title")
+    def save_title(title: Title) -> Notebook:
+        # Re-read for the same reason a correction does: the file is the source of truth.
+        state = State(config.state_file)
+        state.put_title(str(source_dir), title.title)
+        state.save()
+        return _notebook(state)
 
     @app.get("/api/pages/{sha256}/image")
     def read_page_image(sha256: str) -> Response:

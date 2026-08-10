@@ -147,6 +147,64 @@ def test_empty_correction_is_rejected(client):
 
 
 @pytest.mark.unit
+def test_title_defaults_to_the_folder_name(client):
+    body = client.get("/api/notebook").json()
+
+    assert body["title"] == "field-notes"
+    assert body["notebook"] == "field-notes"
+
+
+@pytest.mark.unit
+def test_renaming_persists_the_title_without_touching_page_identity(client):
+    client.put("/api/notebook/title", json={"title": "Field Notes, 2024"})
+
+    body = client.get("/api/notebook").json()
+    assert body["title"] == "Field Notes, 2024"
+    assert body["notebook"] == "field-notes"
+    assert body["vault_file"].endswith("field-notes.md")
+
+
+@pytest.mark.unit
+def test_renaming_does_not_rename_the_vault_file(client):
+    """A display title is cosmetic: renaming must never orphan the notebook markdown."""
+    sha = client.get("/api/notebook").json()["pages"][0]["sha256"]
+    client.put("/api/notebook/title", json={"title": "Renamed"})
+
+    client.put(f"/api/pages/{sha}", json={"text": "corrected"})
+
+    assert (client.config.vault_dir / "field-notes.md").exists()
+    assert list(client.config.vault_dir.glob("*.md")) == [
+        client.config.vault_dir / "field-notes.md"
+    ]
+
+
+@pytest.mark.unit
+def test_blank_title_restores_the_folder_name(client):
+    client.put("/api/notebook/title", json={"title": "Renamed"})
+
+    body = client.put("/api/notebook/title", json={"title": "  "}).json()
+
+    assert body["title"] == "field-notes"
+    assert "notebooks" in json.loads(client.config.state_file.read_text())
+
+
+@pytest.mark.unit
+def test_overlong_title_is_rejected(client):
+    response = client.put("/api/notebook/title", json={"title": "x" * 5000})
+
+    assert response.status_code == 422
+
+
+@pytest.mark.unit
+def test_renaming_leaves_cached_transcriptions_intact(client):
+    sha = client.get("/api/notebook").json()["pages"][0]["sha256"]
+
+    client.put("/api/notebook/title", json={"title": "Renamed"})
+
+    assert State(client.config.state_file).get_text(sha) == "page one text"
+
+
+@pytest.mark.unit
 def test_index_serves_the_review_ui(client):
     response = client.get("/")
 

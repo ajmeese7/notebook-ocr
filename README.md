@@ -40,7 +40,7 @@ The left pane shows the **preprocessed** image, the exact bytes sent to Claude, 
 
 Drawings are transcribed as inline `<svg>`, which is unreadable as source, so **Drawings** (`p`) splits the transcription pane and renders each one below the text, on a light card (the strokes are black on transparent, invisible against the dark editor). The divider drags, and double-clicking it restores the default height. Clicking a rendered drawing selects its markup in the transcription; an SVG the browser cannot parse says so on the card instead of showing a blank. Each drawing is rendered through a `data:` URL in an `<img>`, so model output cannot run script in the review page.
 
-The sidebar drags to any width (double-click the divider to reset) and `[` collapses it. Width, collapsed state, and whether the drawings pane is open persist per browser.
+The sidebar drags to any width (double-click the divider to reset) and `[` collapses it. Its heading is editable: type a friendlier name for a folder like `cyiq_green` and it is saved in `state.json`. That title is **display only** — the vault file stays `<folder>.md` and page order is unchanged, so renaming can never orphan a notebook. Clearing the field restores the folder name. Width, collapsed state, and whether the drawings pane is open persist per browser.
 
 Saving writes the correction into `state.json` keyed by image hash and immediately rebuilds the notebook `.md`. Because the correction lives in the cache, a later `run` reuses it instead of overwriting it with the model's version.
 

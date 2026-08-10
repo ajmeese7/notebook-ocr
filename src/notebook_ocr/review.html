@@ -44,6 +44,20 @@
         background: var(--bg);
       }
       #notebook-name small { display: block; color: var(--muted); font-weight: 400; }
+      /* An input, not a label, so renaming is one click with no edit-mode to discover.
+         Borderless until focused: it should read as the heading it replaces. */
+      #title {
+        width: 100%;
+        border: 1px solid transparent;
+        border-radius: 4px;
+        margin: -3px -5px 0;
+        padding: 2px 4px;
+        background: none;
+        color: inherit;
+        font: inherit;
+      }
+      #title:hover:not(:focus) { border-color: var(--border); }
+      #title:focus { outline: none; border-color: var(--accent); background: var(--panel); }
 
       /* Drag to resize the sidebar; double-click to restore the default width. */
       #sidebar-resizer { cursor: col-resize; background: var(--border); }
@@ -184,7 +198,10 @@
   </head>
   <body>
     <aside id="sidebar">
-      <div id="notebook-name"></div>
+      <div id="notebook-name">
+        <input id="title" spellcheck="false" title="Rename this notebook (display only)" />
+        <small id="page-count"></small>
+      </div>
       <div id="page-list"></div>
     </aside>
     <div id="sidebar-resizer" role="separator" aria-orientation="vertical"
@@ -230,6 +247,8 @@
       // a redundant re-click of the already-current page.
       let index = -1;
       let saved = "";
+      // Last title the server acknowledged, so a failed or cancelled rename can revert.
+      let savedTitle = "";
       let previewTimer = 0;
 
       const current = () => pages[index];
@@ -238,12 +257,17 @@
       async function load() {
         const res = await fetch("/api/notebook");
         if (!res.ok) return setStatus("failed to load notebook", "error");
-        const data = await res.json();
-        pages = data.pages;
-        el("notebook-name").innerHTML =
-          `${escapeHtml(data.notebook)}<small>${pages.length} page(s)</small>`;
+        applyNotebook(await res.json());
         renderList();
         if (pages.length) select(0);
+      }
+
+      function applyNotebook(data) {
+        pages = data.pages;
+        savedTitle = data.title;
+        el("title").value = data.title;
+        el("title").placeholder = data.notebook;
+        el("page-count").textContent = `${pages.length} page(s)`;
       }
 
       function renderList() {
@@ -317,6 +341,22 @@
         renderList();
         refresh();
         setStatus("saved");
+      }
+
+      async function saveTitle() {
+        const title = el("title").value.trim();
+        if (title === savedTitle) return;
+        const res = await fetch("/api/notebook/title", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title }),
+        });
+        if (!res.ok) {
+          el("title").value = savedTitle;
+          return setStatus("rename failed", "error");
+        }
+        applyNotebook(await res.json());
+        setStatus("renamed");
       }
 
       function drawingsIn(text) {
@@ -421,6 +461,14 @@
         clearTimeout(previewTimer);
         previewTimer = setTimeout(renderPreview, PREVIEW_DEBOUNCE_MS);
       });
+      el("title").addEventListener("blur", saveTitle);
+      el("title").addEventListener("keydown", (event) => {
+        if (event.key === "Enter") el("title").blur();
+        if (event.key === "Escape") {
+          el("title").value = savedTitle;
+          el("title").blur();
+        }
+      });
       el("toggle-sidebar").onclick = () =>
         setCollapsed(!document.body.classList.contains("sidebar-collapsed"));
       el("toggle-preview").onclick = () =>
@@ -459,8 +507,10 @@
           if (!el("save").disabled) save();
           return;
         }
-        // Navigation keys must not hijack typing in the textarea.
-        if (event.target === el("text") || event.ctrlKey || event.metaKey || event.altKey) return;
+        // Shortcuts must not hijack typing in the transcription or the title.
+        const typing = event.target instanceof HTMLElement
+          && event.target.matches("input, textarea");
+        if (typing || event.ctrlKey || event.metaKey || event.altKey) return;
         if (event.key === "j" || event.key === "ArrowRight") el("next").click();
         if (event.key === "k" || event.key === "ArrowLeft") el("prev").click();
         if (event.key === "[") el("toggle-sidebar").click();

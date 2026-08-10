@@ -15,6 +15,7 @@
         --edited: #9ece6a;
         --missing: #f7768e;
         --dirty: #e0af68;
+        --sidebar-width: 240px;
         --preview-height: 260px;
       }
       * { box-sizing: border-box; }
@@ -25,7 +26,7 @@
         margin: 0;
         height: 100vh;
         display: grid;
-        grid-template-columns: 240px minmax(0, 1fr);
+        grid-template-columns: var(--sidebar-width) 5px minmax(0, 1fr);
         grid-template-rows: minmax(0, 1fr);
         background: var(--bg);
         color: var(--text);
@@ -43,6 +44,14 @@
         background: var(--bg);
       }
       #notebook-name small { display: block; color: var(--muted); font-weight: 400; }
+
+      /* Drag to resize the sidebar; double-click to restore the default width. */
+      #sidebar-resizer { cursor: col-resize; background: var(--border); }
+      #sidebar-resizer:hover, body.resizing #sidebar-resizer { background: var(--accent); }
+      /* A pointer capture drag would otherwise select page names as it swept across them. */
+      body.resizing { user-select: none; }
+      body.sidebar-collapsed { grid-template-columns: minmax(0, 1fr); }
+      body.sidebar-collapsed #sidebar, body.sidebar-collapsed #sidebar-resizer { display: none; }
       .page-item {
         display: flex;
         gap: 8px;
@@ -131,8 +140,6 @@
       }
       #text:focus { outline: none; }
       /* Drawing previews */
-      /* A pointer capture drag would otherwise select text as it swept across the page. */
-      body.resizing { user-select: none; }
       #preview-pane, #preview-resizer { display: none; }
       #preview-resizer { cursor: row-resize; background: var(--border); }
       #preview-resizer:hover, body.resizing #preview-resizer { background: var(--accent); }
@@ -180,9 +187,12 @@
       <div id="notebook-name"></div>
       <div id="page-list"></div>
     </aside>
+    <div id="sidebar-resizer" role="separator" aria-orientation="vertical"
+         title="Drag to resize, double-click to reset"></div>
 
     <section id="main">
       <div id="toolbar">
+        <button id="toggle-sidebar" title="Show/hide the page list ([)">☰</button>
         <button id="prev" title="Previous page (k / ←)">←</button>
         <button id="next" title="Next page (j / →)">→</button>
         <span id="meta"></span>
@@ -205,7 +215,8 @@
 
     <script>
       const el = (id) => document.getElementById(id);
-      // The drawings pane: default height, and the bounds a drag is clamped to.
+      // Draggable pane sizes: default, and the bounds a drag is clamped to.
+      const SIDEBAR = { name: "sidebarWidth", css: "--sidebar-width", value: 240, min: 160, max: 520 };
       const PREVIEW = { name: "previewHeight", css: "--preview-height", value: 260, min: 120, max: 700 };
       // Re-rendering previews on every keystroke would flicker the images while typing.
       const PREVIEW_DEBOUNCE_MS = 200;
@@ -388,6 +399,11 @@
         localStorage.setItem(pane.name, size);
       }
 
+      function setCollapsed(collapsed) {
+        document.body.classList.toggle("sidebar-collapsed", collapsed);
+        localStorage.setItem("sidebarCollapsed", collapsed ? "1" : "");
+      }
+
       function setPreviewOpen(open) {
         document.body.classList.toggle("preview-open", open);
         localStorage.setItem("previewOpen", open ? "1" : "");
@@ -405,6 +421,8 @@
         clearTimeout(previewTimer);
         previewTimer = setTimeout(renderPreview, PREVIEW_DEBOUNCE_MS);
       });
+      el("toggle-sidebar").onclick = () =>
+        setCollapsed(!document.body.classList.contains("sidebar-collapsed"));
       el("toggle-preview").onclick = () =>
         setPreviewOpen(!document.body.classList.contains("preview-open"));
       el("save").onclick = save;
@@ -430,6 +448,8 @@
         handle.addEventListener("dblclick", () => setPaneSize(pane, pane.value));
       }
 
+      wireResizer(el("sidebar-resizer"), SIDEBAR, (event) =>
+        event.clientX - el("sidebar").getBoundingClientRect().left);
       wireResizer(el("preview-resizer"), PREVIEW, (event) =>
         el("text-pane").getBoundingClientRect().bottom - event.clientY);
 
@@ -443,10 +463,14 @@
         if (event.target === el("text") || event.ctrlKey || event.metaKey || event.altKey) return;
         if (event.key === "j" || event.key === "ArrowRight") el("next").click();
         if (event.key === "k" || event.key === "ArrowLeft") el("prev").click();
+        if (event.key === "[") el("toggle-sidebar").click();
         if (event.key === "p") el("toggle-preview").click();
       });
 
-      setPaneSize(PREVIEW, Number(localStorage.getItem(PREVIEW.name)) || PREVIEW.value);
+      for (const pane of [SIDEBAR, PREVIEW]) {
+        setPaneSize(pane, Number(localStorage.getItem(pane.name)) || pane.value);
+      }
+      setCollapsed(Boolean(localStorage.getItem("sidebarCollapsed")));
       setPreviewOpen(Boolean(localStorage.getItem("previewOpen")));
 
       window.addEventListener("beforeunload", (event) => {

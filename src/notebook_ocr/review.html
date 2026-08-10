@@ -15,6 +15,8 @@
         --edited: #9ece6a;
         --missing: #f7768e;
         --dirty: #e0af68;
+        /* Same amber as --dirty on purpose: both mean "needs attention", not "error". */
+        --pending: #e0af68;
         --sidebar-width: 240px;
         --preview-height: 260px;
       }
@@ -81,7 +83,8 @@
       .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; align-self: center; }
       .dot.transcribed { background: var(--muted); }
       .dot.edited { background: var(--edited); }
-      .dot.missing { background: var(--missing); }
+      .dot.failed { background: var(--missing); }
+      .dot.missing { background: var(--pending); }
       .dot.dirty { background: var(--dirty); }
 
       /* Side-by-side panes */
@@ -95,6 +98,10 @@
       }
       #toolbar .spacer { flex: 1; }
       #meta { color: var(--muted); font-size: 13px; }
+      /* Only the filename is coloured: the capture time and the note beside it are not
+         the thing being flagged, and a whole red toolbar row reads as an alarm. */
+      #meta .name.failed { color: var(--missing); }
+      #meta .name.missing { color: var(--pending); }
       button {
         background: var(--panel);
         color: var(--text);
@@ -304,8 +311,12 @@
         const page = current();
         const note =
           page.status === "edited" ? " · edited" :
+          page.status === "failed" ? ` · ${page.failure ?? "failed"}` :
           page.status === "missing" ? " · not transcribed" : "";
-        el("meta").textContent = `${page.filename} · ${page.capture_time}${note}`;
+        const name = document.createElement("span");
+        name.className = `name ${page.status}`;
+        name.textContent = page.filename;
+        el("meta").replaceChildren(name, ` · ${page.capture_time}${note}`);
       }
 
       function refresh() {

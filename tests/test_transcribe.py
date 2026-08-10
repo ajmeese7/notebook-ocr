@@ -41,6 +41,19 @@ def test_empty_response_raises_rather_than_caching_blank_page():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("stop_reason", "text", "reason"),
+    [("refusal", "", "refused"), ("max_tokens", "partial", "truncated"), ("end_turn", " ", "failed")],
+)
+def test_each_failure_carries_the_reason_recorded_for_review(stop_reason, text, reason):
+    """`run` stores this slug, and review colours a refusal differently from a retryable failure."""
+    with pytest.raises(TranscriptionError) as failure:
+        interpret_response(stop_reason, text, 16000, None)
+
+    assert failure.value.reason == reason
+
+
+@pytest.mark.unit
 def test_failure_types_share_a_common_base_so_callers_catch_one_thing():
     assert issubclass(TranscriptionRefused, TranscriptionError)
     assert issubclass(TranscriptionTruncated, TranscriptionError)

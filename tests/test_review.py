@@ -68,6 +68,56 @@ def test_transcribed_and_untranscribed_pages_are_distinguished(client):
 
 
 @pytest.mark.unit
+def test_refused_page_is_distinguished_from_one_never_attempted(client):
+    """A refusal will not clear on a re-run; an untried page will. They are not the same call to action."""
+    untried = client.get("/api/notebook").json()["pages"][1]
+    state = State(client.config.state_file)
+    state.put_failure(untried["sha256"], "refused", "TranscriptionRefused: model refused page")
+    state.save()
+
+    page = client.get("/api/notebook").json()["pages"][1]
+
+    assert page["status"] == "failed"
+    assert page["failure"] == "refused"
+
+
+@pytest.mark.unit
+def test_page_no_run_has_reached_reports_no_failure(client):
+    page = client.get("/api/notebook").json()["pages"][1]
+
+    assert page["status"] == "missing"
+    assert page["failure"] is None
+
+
+@pytest.mark.unit
+def test_rebuilt_markdown_keeps_the_failure_reason(client):
+    """Rebuilding after a correction must not downgrade "the model refused" to "not transcribed"."""
+    pages = client.get("/api/notebook").json()["pages"]
+    state = State(client.config.state_file)
+    state.put_failure(pages[1]["sha256"], "refused", "TranscriptionRefused: model refused page")
+    state.save()
+
+    client.put(f"/api/pages/{pages[0]['sha256']}", json={"text": "corrected"})
+
+    markdown = (client.config.vault_dir / "field-notes.md").read_text()
+    assert "<!-- TRANSCRIPTION FAILED: TranscriptionRefused: model refused page -->" in markdown
+    assert "NOT TRANSCRIBED" not in markdown
+
+
+@pytest.mark.unit
+def test_correcting_a_refused_page_clears_the_flag(client):
+    sha = client.get("/api/notebook").json()["pages"][1]["sha256"]
+    state = State(client.config.state_file)
+    state.put_failure(sha, "refused", "TranscriptionRefused: model refused page")
+    state.save()
+
+    page = client.put(f"/api/pages/{sha}", json={"text": "typed out by hand"}).json()
+
+    assert page["status"] == "edited"
+    assert page["failure"] is None
+
+
+@pytest.mark.unit
 def test_page_image_endpoint_serves_a_decodable_png(client):
     sha = client.get("/api/notebook").json()["pages"][0]["sha256"]
 

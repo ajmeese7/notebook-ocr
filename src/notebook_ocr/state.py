@@ -55,6 +55,33 @@ class State:
             "transcribed_at": datetime.now().astimezone().isoformat(),
         }
 
+    def get_failure(self, sha256: str) -> dict[str, str] | None:
+        """Why this page has no transcription, or None if it has one or was never tried.
+
+        A page the model refused is not the same as one nobody has transcribed yet: the
+        refusal will not clear by itself, so it is worth surfacing differently.
+        """
+        entry = self.get_entry(sha256)
+        if entry is None or self.get_text(sha256) is not None:
+            return None
+        reason = entry.get("failed")
+        if not isinstance(reason, str) or not reason:
+            return None
+        return {"reason": reason, "detail": entry.get("failed_detail", "")}
+
+    def put_failure(self, sha256: str, reason: str, detail: str) -> None:
+        """Record why a page failed, without caching a result.
+
+        No `text` is stored, so `get_text` still misses and a re-run retries the page;
+        what is kept is the reason, which is otherwise lost the moment the run ends.
+        Only called when the page has no usable text, so nothing is overwritten.
+        """
+        self._pages[sha256] = {
+            "failed": reason,
+            "failed_detail": detail,
+            "failed_at": datetime.now().astimezone().isoformat(),
+        }
+
     def put_correction(self, sha256: str, text: str) -> dict[str, str]:
         """Overwrite a page's text with a human correction, returning the updated entry.
 
@@ -66,6 +93,10 @@ class State:
         entry = dict(self.get_entry(sha256) or {})
         entry["text"] = text
         entry["edited_at"] = datetime.now().astimezone().isoformat()
+        # Typing a refused page out by hand resolves the failure; leaving the reason
+        # behind would keep flagging a page that now has a transcription.
+        for key in ("failed", "failed_detail", "failed_at"):
+            entry.pop(key, None)
         self._pages[sha256] = entry
         return entry
 

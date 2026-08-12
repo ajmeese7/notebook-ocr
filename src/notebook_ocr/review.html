@@ -13,10 +13,10 @@
         --muted: #8b8b98;
         --accent: #7aa2f7;
         --edited: #9ece6a;
-        --missing: #f7768e;
+        --failed: #f7768e;
         --dirty: #e0af68;
         /* Same amber as --dirty on purpose: both mean "needs attention", not "error". */
-        --pending: #e0af68;
+        --missing: #e0af68;
         --sidebar-width: 240px;
         --preview-height: 260px;
       }
@@ -83,8 +83,8 @@
       .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; align-self: center; }
       .dot.transcribed { background: var(--muted); }
       .dot.edited { background: var(--edited); }
-      .dot.failed { background: var(--missing); }
-      .dot.missing { background: var(--pending); }
+      .dot.failed { background: var(--failed); }
+      .dot.missing { background: var(--missing); }
       .dot.dirty { background: var(--dirty); }
 
       /* Side-by-side panes */
@@ -100,8 +100,8 @@
       #meta { color: var(--muted); font-size: 13px; }
       /* Only the filename is coloured: the capture time and the note beside it are not
          the thing being flagged, and a whole red toolbar row reads as an alarm. */
-      #meta .name.failed { color: var(--missing); }
-      #meta .name.missing { color: var(--pending); }
+      #meta .name.failed { color: var(--failed); }
+      #meta .name.missing { color: var(--missing); }
       button {
         background: var(--panel);
         color: var(--text);
@@ -196,11 +196,11 @@
         padding: 8px;
       }
       .drawing figcaption { padding: 6px 8px; color: var(--muted); font-size: 12px; }
-      .drawing.broken figcaption { color: var(--missing); }
+      .drawing.broken figcaption { color: var(--failed); }
       #preview-empty { color: var(--muted); font-size: 13px; }
       #status { color: var(--muted); font-size: 13px; min-width: 90px; }
       #status.dirty { color: var(--dirty); }
-      #status.error { color: var(--missing); }
+      #status.error { color: var(--failed); }
     </style>
   </head>
   <body>

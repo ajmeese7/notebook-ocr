@@ -17,6 +17,9 @@
         --dirty: #e0af68;
         /* Same amber as --dirty on purpose: both mean "needs attention", not "error". */
         --missing: #e0af68;
+        /* Transcribed by something other than the configured model. Not a failure state,
+           so deliberately not red or amber: it is a provenance note. */
+        --other-model: #bb9af7;
         --sidebar-width: 240px;
         --preview-height: 260px;
       }
@@ -85,6 +88,9 @@
       .dot.edited { background: var(--edited); }
       .dot.failed { background: var(--failed); }
       .dot.missing { background: var(--missing); }
+      /* A ring rather than another fill colour: which model wrote a page is independent of
+         whether it is raw, edited, or dirty, so it has to compose with all of them. */
+      .dot.other-model { box-shadow: 0 0 0 2px var(--other-model); }
       .dot.dirty { background: var(--dirty); }
 
       /* Side-by-side panes */
@@ -120,6 +126,7 @@
          the thing being flagged, and a whole red toolbar row reads as an alarm. */
       #meta .name.failed { color: var(--failed); }
       #meta .name.missing { color: var(--missing); }
+      #meta .other-model { color: var(--other-model); }
       button {
         background: var(--panel);
         color: var(--text);
@@ -418,6 +425,16 @@
       const current = () => pages[index];
       const isDirty = () => current() && el("text").value !== saved;
 
+      // A page whose text came from some model other than the one now configured. Usually
+      // the refusal fallback, which is otherwise only visible as a line of `run` output
+      // that scrolls away; also true of pages left behind when the config's model changes.
+      // Either way the page was not produced the way the rest of the notebook was, and the
+      // label names the actual model so the two cases are never confused.
+      const usedOtherModel = (page) => Boolean(page.model) && page.model !== model;
+
+      const dotClass = (page, dirty) =>
+        `dot ${dirty ? "dirty" : page.status}${usedOtherModel(page) ? " other-model" : ""}`;
+
       async function load() {
         const res = await fetch("/api/notebook");
         if (!res.ok) return setStatus("failed to load notebook", "error");
@@ -441,7 +458,7 @@
             const item = document.createElement("div");
             item.className = "page-item" + (i === index ? " selected" : "");
             item.innerHTML =
-              `<span class="dot ${page.status}"></span>` +
+              `<span class="${dotClass(page, false)}"></span>` +
               `<span class="num">${String(page.page_number).padStart(3, "0")}</span>` +
               `<span class="name">${escapeHtml(page.filename)}</span>`;
             item.onclick = () => select(i);
@@ -473,9 +490,19 @@
         const name = document.createElement("span");
         name.className = `name ${page.status}`;
         name.textContent = page.filename;
-        el("meta").replaceChildren(name, ` · ${page.capture_time}${note}`);
-        // Truncated when the toolbar is tight, so keep the whole line reachable.
-        el("meta").title = el("meta").textContent;
+        const parts = [name, ` · ${page.capture_time}${note}`];
+        if (usedOtherModel(page)) {
+          const origin = document.createElement("span");
+          origin.className = "other-model";
+          origin.textContent = ` · ${page.model}`;
+          parts.push(origin);
+        }
+        el("meta").replaceChildren(...parts);
+        // Truncated when the toolbar is tight, so keep the whole line reachable. The model
+        // is spelled out here because the colour alone does not say which one it was.
+        el("meta").title = usedOtherModel(page)
+          ? `${el("meta").textContent}\nTranscribed by ${page.model}, not the configured ${model}.`
+          : el("meta").textContent;
       }
 
       function refresh() {
@@ -489,7 +516,7 @@
         setStatus(dirty ? "unsaved" : "", dirty ? "dirty" : "");
         // Mirror dirtiness onto the list dot so it is visible while scrolling elsewhere.
         const dot = el("page-list").children[index]?.firstChild;
-        if (dot) dot.className = `dot ${dirty ? "dirty" : current().status}`;
+        if (dot) dot.className = dotClass(current(), dirty);
       }
 
       // The overlay belongs to one page, so it shows only while that page is on screen.

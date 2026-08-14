@@ -36,7 +36,13 @@ Transcription errors are only visible against the page they came from, so `revie
 uv run notebook-ocr review -c config.yaml     # --port 8420, --host, --no-browser
 ```
 
-The left pane shows the **preprocessed** image, the exact bytes sent to Claude, so a bad line is attributable to either the model or the deskew/crop that fed it. The right pane is the transcription, editable in place. `j`/`k` (or the arrow keys) change page, ctrl-s saves, and clicking the image toggles between fit-to-pane and full resolution. Page markers show status at a glance: grey for model output, green for human-edited, yellow for not transcribed yet, and red for a page a run tried and could not transcribe. The filename in the toolbar takes the same colour, and names the reason (`refused`, `truncated`, `api_error`) beside it: a refusal will not clear by re-running, while a truncation usually will.
+The left pane shows the **preprocessed** image, the exact bytes sent to Claude, so a bad line is attributable to either the model or the deskew/crop that fed it. The right pane is the transcription, editable in place. `j`/`k` (or the arrow keys) change page and ctrl-s saves.
+
+Drag the page to pan it. The controls floating over the image step the zoom (`+` and `-`, or the keys of the same name); the percentage between them resets to fit, as does `0`. Clicking the page without dragging still toggles between fit and full resolution. A fitted page re-fits when the pane resizes; a zoom you chose is left alone.
+
+Page markers show status at a glance: grey for model output, green for human-edited, yellow for not transcribed yet, and red for a page a run tried and could not transcribe. The filename in the toolbar takes the same colour, and names the reason (`refused`, `truncated`, `api_error`) beside it: a refusal will not clear by re-running, while a truncation usually will.
+
+A page transcribed by a model other than the configured one gets a purple ring around its marker and the model's name in the toolbar. That is normally the refusal fallback, which otherwise only ever appeared as a line of `run` output that scrolled away, leaving no way to tell which pages in a finished notebook came from the weaker model. It also catches pages left behind by a change to `model` in the config. The name is spelled out rather than labelled "fallback" so the two cases are never confused.
 
 Drawings are transcribed as inline `<svg>`, which is unreadable as source, so **Drawings** (`p`) splits the transcription pane and renders each one below the text, on a light card (the strokes are black on transparent, invisible against the dark editor). The divider drags, and double-clicking it restores the default height. Clicking a rendered drawing selects its markup in the transcription; an SVG the browser cannot parse says so on the card instead of showing a blank. Each drawing is rendered through a `data:` URL in an `<img>`, so model output cannot run script in the review page.
 

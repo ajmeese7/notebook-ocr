@@ -19,12 +19,24 @@ structure (shapes, arrows, connections, spatial relationships, handwritten label
 <text>), not its stroke-level appearance. Use a viewBox sized to the diagram, black
 strokes on transparent background, no fill unless the original is filled.
 
-Small margin marks (checkmarks, stars, arrows pointing at a line, brackets grouping
-lines) are annotations, not diagrams: represent them as text conventions instead, e.g.
-"[x]" for a checked item, "*" for starred, and a nested blockquote or indented note for
-bracketed groupings. A plain wavy horizontal line whose only job is to divide sections
-becomes "---" — but a line that carries meaning (has labels near it, a direction or
-trend, or connects things) is a diagram and gets an <svg>.
+A drawing only earns an <svg> if it has content of its own: an enclosed shape (box,
+circle, node), or its own handwritten label that is part of the drawing rather than
+part of the running text. Marks made of nothing but strokes — arrows, lines, brackets,
+carets, underlines, checkmarks, stars — are annotations on the writing, not drawings.
+Never emit an <svg> that contains only <path>/<line>/<polyline> elements with no shape
+and no <text>; there is nothing in it to convey.
+
+Handle annotations as text conventions instead:
+- An arrow from one line to another (or into the margin, or pointing at a word): put
+  "↳" at the start of the line it points to, keeping that line in its normal reading
+  position. If the arrow only restates the layout that is already there, drop it.
+- "[x]" for a checked item, "*" for a starred one.
+- A nested blockquote or indented note for a bracket grouping lines.
+- A plain horizontal or wavy line dividing sections becomes "---".
+
+A line does become a diagram when it is drawn with labels of its own (an axis with a
+trend, a timeline with marks on it, arrows between labelled nodes) — then the whole
+figure, labels included, gets one <svg>.
 
 If a drawing is too organic to vectorize faithfully (a scene, a face, a map), emit
 <!-- drawing: one-line description --> instead of a bad SVG.

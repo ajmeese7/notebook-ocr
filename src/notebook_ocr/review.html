@@ -143,20 +143,53 @@
         grid-template-rows: minmax(0, 1fr);
         min-height: 0;
       }
-      /* Flex, not grid: a percentage max-height only resolves against a definite-height
-         parent, and a grid row sized to its content is not definite. */
+      #image-wrap {
+        position: relative;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr);
+        min-width: 0;
+        min-height: 0;
+      }
       #image-pane {
         overflow: auto;
         min-height: 0;
         background: #0e0e11;
         display: flex;
-        align-items: center;
-        justify-content: center;
         padding: 12px;
+        /* A drag pans the page, so it must not sweep a text selection across the UI. */
+        user-select: none;
       }
-      #page-image { display: block; max-width: 100%; max-height: 100%; cursor: zoom-in; }
-      #image-pane.zoomed { align-items: start; justify-content: start; }
-      #image-pane.zoomed #page-image { max-width: none; max-height: none; cursor: zoom-out; }
+      /* Grab affordance only when there is somewhere to go; a fitted page cannot pan. */
+      #image-pane.pannable #page-image { cursor: grab; }
+      #image-pane.panning, #image-pane.panning #page-image { cursor: grabbing; }
+      /* margin:auto, not justify/align-content: a centred flex item whose content
+         overflows puts its top-left outside the scrollable area and makes it unreachable.
+         Auto margins centre the same way and collapse to zero once it overflows. */
+      #page-image { display: block; margin: auto; }
+      /* Floated over the page rather than parked in the toolbar: it belongs to the pane it
+         controls, and the toolbar is already the tightest row in the UI. Inset far enough
+         to clear the scrollbars, which the scroller draws along the same two edges. */
+      #zoom-controls {
+        position: absolute;
+        right: 18px;
+        bottom: 18px;
+        display: flex;
+        gap: 4px;
+        padding: 4px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: rgb(14 14 17 / 0.85);
+        opacity: 0.75;
+        transition: opacity 0.15s;
+      }
+      /* Quiet until wanted, but never invisible: the zoom level is worth reading at a
+         glance, and a control you have to hunt for is not discoverable. */
+      #zoom-controls:hover, #zoom-controls:focus-within { opacity: 1; }
+      #zoom-controls button { padding: 3px 9px; }
+      /* Fixed width and tabular figures: the percentage changes on every click, and a
+         button that resizes under the cursor is a button you miss on the second press. */
+      #zoom-level { min-width: 4.25rem; font-variant-numeric: tabular-nums; }
       #text-pane {
         display: grid;
         grid-template-rows: minmax(0, 1fr);
@@ -310,7 +343,17 @@
         <button id="save" title="Save correction (ctrl-s)">Save</button>
       </div>
       <div id="panes">
-        <div id="image-pane"><img id="page-image" alt="" /></div>
+        <!-- The controls are a sibling of the scroller, not a child: inside it they would
+             scroll away with the page instead of staying put over it. -->
+        <div id="image-wrap">
+          <!-- draggable=false so the browser's native image drag does not pre-empt panning. -->
+          <div id="image-pane"><img id="page-image" alt="" draggable="false" /></div>
+          <div id="zoom-controls">
+            <button id="zoom-out" title="Zoom out (-)">−</button>
+            <button id="zoom-level" title="Fit the page to the pane (0)"></button>
+            <button id="zoom-in" title="Zoom in (+)">+</button>
+          </div>
+        </div>
         <div id="text-pane">
           <textarea id="text" spellcheck="false" placeholder="No transcription for this page."></textarea>
           <div id="busy" role="status"><span class="spinner"></span><span id="busy-label"></span></div>
@@ -337,6 +380,13 @@
       const PREVIEW = { name: "previewHeight", css: "--preview-height", value: 260, min: 120, max: 700 };
       // Re-rendering previews on every keystroke would flicker the images while typing.
       const PREVIEW_DEBOUNCE_MS = 200;
+      // Zoom is a scale against the image's natural size. The step is geometric so each
+      // press moves the same proportion whether you are at 20% or 400%.
+      const ZOOM_STEP = 1.25;
+      const ZOOM_MIN = 0.05;
+      const ZOOM_MAX = 8;
+      // A drag under this many pixels is a click, not a pan: fingers and mice both wobble.
+      const PAN_SLOP_PX = 4;
       // Either an inline drawing or the comment the model leaves when it declines to
       // vectorize one; the capture group is the description, and is absent for an <svg>.
       const DRAWING_PATTERN = /<svg\b[\s\S]*?<\/svg>|<!--\s*drawing:\s*([\s\S]*?)-->/gi;
@@ -357,6 +407,13 @@
       // another page during a long call does not drape it over the wrong transcription.
       let spending = null;
       let spendingTimer = 0;
+      // Current image scale, and whether it is still the fitted one. `atFit` is tracked
+      // rather than compared against a recomputed fit scale so the page re-fits when the
+      // pane resizes, but stays put once you have chosen a zoom of your own.
+      let zoom = 1;
+      let atFit = true;
+      // Pointer origin and starting scroll offsets while panning, or null.
+      let panning = null;
 
       const current = () => pages[index];
       const isDirty = () => current() && el("text").value !== saved;
@@ -401,7 +458,6 @@
         saved = page.text;
         el("text").value = page.text;
         el("page-image").src = `/api/pages/${page.sha256}/image`;
-        el("image-pane").classList.remove("zoomed");
         renderMeta();
         renderList();
         renderPreview();
@@ -448,6 +504,55 @@
         const seconds = Math.round((performance.now() - spending.started) / 1000);
         el("busy-label").textContent =
           `Transcribing page ${spending.pageNumber}… ${seconds}s`;
+      }
+
+      // The scale at which the whole page is visible, from the pane's content box.
+      function fitZoom() {
+        const image = el("page-image");
+        const pane = el("image-pane");
+        if (!image.naturalWidth || !image.naturalHeight) return 1;
+        const style = getComputedStyle(pane);
+        const width =
+          pane.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        const height =
+          pane.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+        return Math.min(width / image.naturalWidth, height / image.naturalHeight);
+      }
+
+      function applyZoom() {
+        const image = el("page-image");
+        const pane = el("image-pane");
+        image.style.width = `${image.naturalWidth * zoom}px`;
+        image.style.height = `${image.naturalHeight * zoom}px`;
+        el("zoom-level").textContent = `${Math.round(zoom * 100)}%`;
+        el("zoom-in").disabled = zoom >= ZOOM_MAX;
+        el("zoom-out").disabled = zoom <= ZOOM_MIN;
+        // Only offer the grab cursor when there is actually somewhere to pan to.
+        pane.classList.toggle(
+          "pannable",
+          pane.scrollWidth > pane.clientWidth || pane.scrollHeight > pane.clientHeight
+        );
+      }
+
+      function fitImage() {
+        zoom = fitZoom();
+        atFit = true;
+        applyZoom();
+      }
+
+      // Zooms about the centre of the pane, so the detail you are looking at stays put
+      // instead of sliding away as the image grows around its top-left corner.
+      function zoomBy(factor) {
+        const pane = el("image-pane");
+        const previous = zoom;
+        zoom = Math.min(Math.max(zoom * factor, ZOOM_MIN), ZOOM_MAX);
+        if (zoom === previous) return;
+        atFit = false;
+        const centreX = (pane.scrollLeft + pane.clientWidth / 2) / previous;
+        const centreY = (pane.scrollTop + pane.clientHeight / 2) / previous;
+        applyZoom();
+        pane.scrollLeft = centreX * zoom - pane.clientWidth / 2;
+        pane.scrollTop = centreY * zoom - pane.clientHeight / 2;
       }
 
       function stopSpending() {
@@ -692,7 +797,48 @@
       el("revert").onclick = () => { el("text").value = saved; refresh(); };
       el("prev").onclick = () => select(Math.max(index - 1, 0));
       el("next").onclick = () => select(Math.min(index + 1, pages.length - 1));
-      el("page-image").onclick = () => el("image-pane").classList.toggle("zoomed");
+      el("zoom-in").onclick = () => zoomBy(ZOOM_STEP);
+      el("zoom-out").onclick = () => zoomBy(1 / ZOOM_STEP);
+      el("zoom-level").onclick = fitImage;
+      // Natural size is unknown until the bytes arrive, so the fit is computed on load.
+      el("page-image").onload = fitImage;
+
+      el("image-pane").addEventListener("pointerdown", (event) => {
+        // Only from the page itself: a press on the letterboxing around a fitted page is
+        // not a grab, and should not toggle the zoom either.
+        if (event.button !== 0 || event.target !== el("page-image")) return;
+        const pane = el("image-pane");
+        event.preventDefault();
+        pane.setPointerCapture(event.pointerId);
+        panning = {
+          x: event.clientX,
+          y: event.clientY,
+          left: pane.scrollLeft,
+          top: pane.scrollTop,
+          moved: false,
+        };
+        pane.classList.add("panning");
+      });
+      el("image-pane").addEventListener("pointermove", (event) => {
+        if (!panning) return;
+        const pane = el("image-pane");
+        const dx = event.clientX - panning.x;
+        const dy = event.clientY - panning.y;
+        if (Math.hypot(dx, dy) > PAN_SLOP_PX) panning.moved = true;
+        // Inverted: dragging the page right reveals what is off the left edge.
+        pane.scrollLeft = panning.left - dx;
+        pane.scrollTop = panning.top - dy;
+      });
+      for (const done of ["pointerup", "pointercancel"]) {
+        el("image-pane").addEventListener(done, () => {
+          const wasClick = panning && !panning.moved;
+          panning = null;
+          el("image-pane").classList.remove("panning");
+          // A press that never moved keeps the old meaning: toggle between the whole page
+          // and full resolution, without having to aim at the toolbar.
+          if (wasClick) atFit ? zoomBy(1 / zoom) : fitImage();
+        });
+      }
 
       function wireResizer(handle, pane, sizeFromPointer) {
         handle.addEventListener("pointerdown", (event) => {
@@ -734,7 +880,16 @@
         if (event.key === "k" || event.key === "ArrowLeft") el("prev").click();
         if (event.key === "[") el("toggle-sidebar").click();
         if (event.key === "p") el("toggle-preview").click();
+        // "=" as well as "+": zooming in should not need the shift key.
+        if (event.key === "+" || event.key === "=") el("zoom-in").click();
+        if (event.key === "-") el("zoom-out").click();
+        if (event.key === "0") el("zoom-level").click();
       });
+
+      // The pane resizes from the window, the sidebar drag, and the drawings pane opening.
+      // A page still at its fitted size should track all three; a deliberate zoom should
+      // survive them, and only have its pannable affordance rechecked.
+      new ResizeObserver(() => (atFit ? fitImage() : applyZoom())).observe(el("image-pane"));
 
       for (const pane of [SIDEBAR, PREVIEW]) {
         setPaneSize(pane, Number(localStorage.getItem(pane.name)) || pane.value);

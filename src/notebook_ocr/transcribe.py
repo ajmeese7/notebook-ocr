@@ -1,8 +1,11 @@
 """Claude vision call: one cleaned image in, verbatim markdown out."""
 
 import base64
+import sys
 
 import anthropic
+
+from .config import Config
 
 TRANSCRIPTION_PROMPT = """\
 Transcribe this handwritten notebook page to markdown, verbatim.
@@ -149,3 +152,38 @@ class Transcriber:
             ],
         ) as stream:
             return stream.get_final_message()
+
+
+class TranscriberPool:
+    """Primary transcriber with an optional fallback tried only on a refusal.
+
+    Both clients are created lazily so a fully-cached run makes no API calls, and the
+    fallback client is not built unless the primary actually refuses a page. Shared by
+    `run` and the review server so a page re-transcribed from the UI goes through exactly
+    the same models, limits, and refusal handling as a batch run.
+    """
+
+    def __init__(self, config: Config):
+        self._model = config.model
+        self._fallback_model = config.fallback_model
+        self._max_tokens = config.max_tokens
+        self._primary: Transcriber | None = None
+        self._fallback: Transcriber | None = None
+
+    def transcribe(self, png_bytes: bytes) -> tuple[str, str]:
+        """Return (transcription, model that produced it). Raises on unrecoverable failure."""
+        if self._primary is None:
+            self._primary = Transcriber(self._model, self._max_tokens)
+        try:
+            return self._primary.transcribe(png_bytes), self._model
+        except TranscriptionRefused:
+            if self._fallback_model is None:
+                raise
+            print(
+                f"  .. primary ({self._model}) refused; retrying with fallback "
+                f"({self._fallback_model})",
+                file=sys.stderr,
+            )
+            if self._fallback is None:
+                self._fallback = Transcriber(self._fallback_model, self._max_tokens)
+            return self._fallback.transcribe(png_bytes), self._fallback_model

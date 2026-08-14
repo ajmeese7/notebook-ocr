@@ -17,18 +17,25 @@ them durable: the next `run` reads the cache and reuses the correction instead o
 overwriting it. The notebook markdown is rebuilt on every save so the vault never lags
 behind what the reviewer sees.
 
-The server never calls the Claude API; reviewing cannot cost money. It does bind every
-interface by default so a page can be checked from a phone on the same network, and it is
-unauthenticated: anyone who can reach the port can read the notebook and rewrite it.
+Re-transcribing a page is the one action here that calls the Claude API, and so the one
+that costs money. Nothing else does: reading, editing, and renaming are all local. It is
+a POST rather than a GET for that reason, it is never triggered by navigation or reload,
+and the UI puts a confirmation in front of it naming the model that will be billed.
+
+The server binds every interface by default so a page can be checked from a phone on the
+same network, and it is unauthenticated: anyone who can reach the port can read the
+notebook, rewrite it, and now spend money on it. `serve` says so before it starts.
 """
 
 import socket
 import sys
 import webbrowser
+from collections.abc import Callable
 from datetime import date
 from functools import lru_cache, partial
 from pathlib import Path
 
+import anthropic
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
@@ -38,7 +45,12 @@ from .config import Config
 from .discover import DiscoveredImage, discover
 from .preprocess import preprocess_image
 from .state import State
+from .transcribe import CredentialsMissing, TranscriberPool, TranscriptionError
 from .vault import PageEntry, render_notebook
+
+# (transcription, model that produced it) for one preprocessed PNG. Injectable so the
+# server can be exercised without credentials or a billable call.
+Transcribe = Callable[[bytes], tuple[str, str]]
 
 _UI_FILE = Path(__file__).parent / "review.html"
 
@@ -90,6 +102,9 @@ class Notebook(BaseModel):
     """Everything the UI needs to render a review session."""
 
     notebook: str
+    # The model a re-transcribe would bill, so the confirmation can name it rather than
+    # asking for consent to an unspecified charge.
+    model: str
     # Display label shown in place of the folder name; equal to `notebook` until renamed.
     # Deliberately cosmetic: the vault filename and page order still come from the folder,
     # so renaming cannot orphan a `.md`.
@@ -133,9 +148,15 @@ def _to_page(page_number: int, image: DiscoveredImage, state: State) -> Page:
     )
 
 
-def create_app(config: Config) -> FastAPI:
-    """Build the review app over one config's input folder, vault, and state file."""
+def create_app(config: Config, transcribe: Transcribe | None = None) -> FastAPI:
+    """Build the review app over one config's input folder, vault, and state file.
+
+    `transcribe` defaults to the same primary-plus-fallback pool `run` uses, built lazily
+    so merely opening the review UI never constructs a client or needs credentials.
+    """
     source_dir = config.input_dir.resolve()
+    if transcribe is None:
+        transcribe = TranscriberPool(config).transcribe
     app = FastAPI(title=f"notebook-ocr review: {source_dir.name}")
 
     # Discovery hashes every file in the folder, so do it once at startup rather than per
@@ -174,6 +195,7 @@ def create_app(config: Config) -> FastAPI:
     def _notebook(state: State) -> Notebook:
         return Notebook(
             notebook=source_dir.name,
+            model=config.model,
             title=state.get_title(str(source_dir)) or source_dir.name,
             source_dir=str(source_dir),
             vault_file=str(config.vault_dir / f"{source_dir.name}.md"),
@@ -208,6 +230,37 @@ def create_app(config: Config) -> FastAPI:
         # `run` may have written to it since this server started.
         state = State(config.state_file)
         state.put_correction(sha256, correction.text)
+        state.save()
+        _rebuild_markdown(state)
+        return _to_page(page_number, image, state)
+
+    @app.post("/api/pages/{sha256}/transcribe")
+    def retranscribe(sha256: str) -> Page:
+        """Send one page to the model again, replacing whatever text it currently has.
+
+        This is the only billable endpoint. It exists because a page can be cached and
+        still be wrong: a prompt improvement, a better model, or a bad crop since fixed
+        all produce a transcription worth redoing, and the cache is keyed by image bytes,
+        so nothing about the page itself will ever invalidate it.
+
+        A failed attempt leaves state untouched. `run` records the reason for a failure
+        because it has nothing else to keep, but here the page may already hold good text
+        or a human correction, and overwriting either with a failure marker would destroy
+        work to report an error the caller is about to be handed anyway.
+        """
+        page_number, image = _lookup(sha256)
+        try:
+            text, model_used = transcribe(_preprocessed_png(image.path, image.sha256))
+        except CredentialsMissing as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except (TranscriptionError, anthropic.APIError) as error:
+            detail = f"{type(error).__name__}: {error}"
+            raise HTTPException(status_code=502, detail=detail) from error
+
+        state = State(config.state_file)
+        # put(), not put_correction(): this is fresh model output, so the page goes back
+        # to "transcribed" and any previous edited_at stamp is correct to drop.
+        state.put(sha256, text, model_used)
         state.save()
         _rebuild_markdown(state)
         return _to_page(page_number, image, state)
@@ -268,9 +321,9 @@ def serve(config: Config, host: str, port: int, open_browser: bool) -> None:
         address = lan_address()
         if address:
             say(f"  from another device on this network: http://{address}:{port}")
-        # Anyone who can reach this port can read every page and rewrite the notes, so do
-        # not let that be a surprise.
-        say("  no password: anyone on this network can read and edit these notes")
+        # Anyone who can reach this port can read every page, rewrite the notes, and
+        # re-transcribe pages against a billed API key, so do not let that be a surprise.
+        say("  no password: anyone on this network can read, edit, and re-transcribe these")
         say("  restrict it with: --host 127.0.0.1")
 
     if open_browser:

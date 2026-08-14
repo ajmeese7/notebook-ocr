@@ -88,7 +88,15 @@
       .dot.dirty { background: var(--dirty); }
 
       /* Side-by-side panes */
-      #main { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; }
+      /* The column is declared, not implicit: an implicit `auto` track sizes to the
+         toolbar's max-content, so a long status message widens the whole pane instead of
+         being truncated by it. */
+      #main {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr);
+        min-width: 0;
+      }
       #toolbar {
         display: flex;
         gap: 12px;
@@ -97,7 +105,17 @@
         border-bottom: 1px solid var(--border);
       }
       #toolbar .spacer { flex: 1; }
-      #meta { color: var(--muted); font-size: 13px; }
+      /* Buttons keep their size; the two text runs give up width instead. Without this the
+         toolbar is wider than the pane and the whole document scrolls sideways. */
+      #toolbar button { flex: none; }
+      #meta {
+        color: var(--muted);
+        font-size: 13px;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       /* Only the filename is coloured: the capture time and the note beside it are not
          the thing being flagged, and a whole red toolbar row reads as an alarm. */
       #meta .name.failed { color: var(--failed); }
@@ -110,6 +128,9 @@
         padding: 5px 12px;
         font: inherit;
         cursor: pointer;
+        /* The toolbar is a flex row: without this a two-word label wraps mid-button as
+           soon as the panes get narrow. */
+        white-space: nowrap;
       }
       button:hover:not(:disabled) { border-color: var(--accent); }
       button:disabled { opacity: 0.4; cursor: default; }
@@ -141,7 +162,36 @@
         grid-template-rows: minmax(0, 1fr);
         border-left: 1px solid var(--border);
         min-width: 0;
+        /* Anchors the transcribing overlay to this pane. */
+        position: relative;
       }
+
+      /* Shown over the text being replaced, not just as a word in the toolbar: a
+         transcription runs for tens of seconds, and the pane is where the change lands. */
+      #busy { display: none; }
+      body.spending #busy {
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        justify-content: center;
+        background: rgb(22 22 26 / 0.72);
+        color: var(--muted);
+      }
+      body.spending #text { opacity: 0.4; }
+      .spinner {
+        width: 16px;
+        height: 16px;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      /* Still turns, so it never reads as hung, just slowly enough not to be a distraction. */
+      @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
       /* Drawings split off the bottom of the transcription rather than taking a column of
          their own: they belong to the text they sit in, and a third column would squeeze
          both the page image and the lines being corrected. */
@@ -198,9 +248,41 @@
       .drawing figcaption { padding: 6px 8px; color: var(--muted); font-size: 12px; }
       .drawing.broken figcaption { color: var(--failed); }
       #preview-empty { color: var(--muted); font-size: 13px; }
-      #status { color: var(--muted); font-size: 13px; min-width: 90px; }
+      /* Bounded because an API error detail can be a paragraph, and letting it wrap grows
+         the toolbar and shoves the panes down. The full text stays in the title tooltip. */
+      #status {
+        color: var(--muted);
+        font-size: 13px;
+        flex: 0 1 auto;
+        min-width: 0;
+        max-width: 22rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       #status.dirty { color: var(--dirty); }
       #status.error { color: var(--failed); }
+
+      /* Spend confirmation. Every other action here is local and reversible; this one
+         bills an API key, so it gets a modal rather than the button doing it outright. */
+      #confirm {
+        width: min(30rem, calc(100vw - 32px));
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 20px;
+        background: var(--panel);
+        color: var(--text);
+        font: inherit;
+      }
+      #confirm::backdrop { background: rgb(0 0 0 / 0.6); }
+      #confirm h2 { margin: 0 0 10px; font-size: 16px; }
+      #confirm p { margin: 0 0 10px; color: var(--muted); }
+      #confirm p.warn { color: var(--dirty); }
+      #confirm .cost { color: var(--text); }
+      #confirm .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+      /* The spending button is the one that has to look deliberate, so it carries the
+         colour; cancel stays the plain default and holds the initial focus. */
+      #confirm-ok { border-color: var(--dirty); }
     </style>
   </head>
   <body>
@@ -223,6 +305,7 @@
         <span class="spacer"></span>
         <span id="status"></span>
         <button id="toggle-preview" title="Show/hide rendered drawings (p)">Drawings</button>
+        <button id="retranscribe" title="Send this page to the model again (costs money)">Re-transcribe</button>
         <button id="revert" title="Discard unsaved edits">Revert</button>
         <button id="save" title="Save correction (ctrl-s)">Save</button>
       </div>
@@ -230,12 +313,22 @@
         <div id="image-pane"><img id="page-image" alt="" /></div>
         <div id="text-pane">
           <textarea id="text" spellcheck="false" placeholder="No transcription for this page."></textarea>
+          <div id="busy" role="status"><span class="spinner"></span><span id="busy-label"></span></div>
           <div id="preview-resizer" role="separator" aria-orientation="horizontal"
                title="Drag to resize, double-click to reset"></div>
           <div id="preview-pane"></div>
         </div>
       </div>
     </section>
+
+    <dialog id="confirm" aria-labelledby="confirm-title">
+      <h2 id="confirm-title"></h2>
+      <div id="confirm-body"></div>
+      <div class="actions">
+        <button id="confirm-cancel" autofocus>Cancel</button>
+        <button id="confirm-ok"></button>
+      </div>
+    </dialog>
 
     <script>
       const el = (id) => document.getElementById(id);
@@ -257,6 +350,13 @@
       // Last title the server acknowledged, so a failed or cancelled rename can revert.
       let savedTitle = "";
       let previewTimer = 0;
+      // Model a re-transcribe would bill, named in the confirmation.
+      let model = "";
+      // The page a billable request is in flight for, or null. Non-null blocks a second
+      // click from double-spending; the index is what the overlay keys off, so browsing to
+      // another page during a long call does not drape it over the wrong transcription.
+      let spending = null;
+      let spendingTimer = 0;
 
       const current = () => pages[index];
       const isDirty = () => current() && el("text").value !== saved;
@@ -271,6 +371,7 @@
 
       function applyNotebook(data) {
         pages = data.pages;
+        model = data.model;
         savedTitle = data.title;
         el("title").value = data.title;
         el("title").placeholder = data.notebook;
@@ -317,12 +418,16 @@
         name.className = `name ${page.status}`;
         name.textContent = page.filename;
         el("meta").replaceChildren(name, ` · ${page.capture_time}${note}`);
+        // Truncated when the toolbar is tight, so keep the whole line reachable.
+        el("meta").title = el("meta").textContent;
       }
 
       function refresh() {
         const dirty = isDirty();
         el("save").disabled = !dirty || !el("text").value.trim();
         el("revert").disabled = !dirty;
+        el("retranscribe").disabled = !current() || Boolean(spending);
+        renderBusy();
         el("prev").disabled = index === 0;
         el("next").disabled = index >= pages.length - 1;
         setStatus(dirty ? "unsaved" : "", dirty ? "dirty" : "");
@@ -331,9 +436,31 @@
         if (dot) dot.className = `dot ${dirty ? "dirty" : current().status}`;
       }
 
+      // The overlay belongs to one page, so it shows only while that page is on screen.
+      // The elapsed count is there because a bare spinner sitting still for forty seconds
+      // is indistinguishable from a hung one.
+      function renderBusy() {
+        const active = spending !== null && spending.index === index;
+        document.body.classList.toggle("spending", active);
+        // Typing into text that is about to be overwritten is wasted work.
+        el("text").readOnly = active;
+        if (!active) return;
+        const seconds = Math.round((performance.now() - spending.started) / 1000);
+        el("busy-label").textContent =
+          `Transcribing page ${spending.pageNumber}… ${seconds}s`;
+      }
+
+      function stopSpending() {
+        clearInterval(spendingTimer);
+        spending = null;
+        refresh();
+      }
+
       function setStatus(message, cls = "") {
         el("status").textContent = message;
         el("status").className = cls;
+        // The line is truncated, so the untruncated message has to be reachable somewhere.
+        el("status").title = message;
       }
 
       async function save() {
@@ -368,6 +495,79 @@
         }
         applyNotebook(await res.json());
         setStatus("renamed");
+      }
+
+      // Gate for anything that spends money. `warnings` are the consequences specific to
+      // this page (work about to be destroyed); the cost line is always shown, because the
+      // charge is the part being consented to and it must never be the implicit half.
+      function confirmSpend({ title, cost, warnings, confirmLabel }) {
+        const dialog = el("confirm");
+        el("confirm-title").textContent = title;
+        el("confirm-ok").textContent = confirmLabel;
+        el("confirm-body").replaceChildren(
+          ...warnings.map((text) => {
+            const line = document.createElement("p");
+            line.className = "warn";
+            line.textContent = text;
+            return line;
+          }),
+          Object.assign(document.createElement("p"), { className: "cost", textContent: cost })
+        );
+        dialog.showModal();
+        return new Promise((resolve) =>
+          // Covers Escape and the backdrop too: both close with an empty returnValue.
+          dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok"), {
+            once: true,
+          })
+        );
+      }
+
+      async function retranscribe() {
+        const page = current();
+        const warnings = [];
+        if (page.status === "edited") {
+          warnings.push("This page has a saved correction. The model's output will replace it.");
+        } else if (page.text) {
+          warnings.push("This page already has a transcription. It will be replaced.");
+        }
+        if (isDirty()) warnings.push("Unsaved edits in the editor will be discarded.");
+
+        const ok = await confirmSpend({
+          title: `Re-transcribe page ${page.page_number}?`,
+          cost: `Sends ${page.filename} to ${model}. This calls the Claude API and bills your key.`,
+          warnings,
+          confirmLabel: "Re-transcribe",
+        });
+        if (!ok) return;
+
+        // The reply is applied to the page it was requested for, not to whatever is on
+        // screen when it lands: these calls take a while and reviewers keep browsing.
+        const requested = index;
+        spending = { index: requested, pageNumber: page.page_number, started: performance.now() };
+        spendingTimer = setInterval(renderBusy, 1000);
+        refresh();
+        setStatus("transcribing…");
+        let res;
+        try {
+          res = await fetch(`/api/pages/${page.sha256}/transcribe`, { method: "POST" });
+        } catch (error) {
+          stopSpending();
+          return setStatus("re-transcribe failed: network error", "error");
+        }
+        stopSpending();
+        if (!res.ok) {
+          const detail = await res.json().catch(() => null);
+          return setStatus(`re-transcribe failed: ${detail?.detail ?? res.status}`, "error");
+        }
+        pages[requested] = await res.json();
+        renderList();
+        if (requested !== index) return setStatus(`page ${requested + 1} re-transcribed`);
+        saved = pages[index].text;
+        el("text").value = saved;
+        renderMeta();
+        renderPreview();
+        refresh();
+        setStatus("re-transcribed");
       }
 
       function drawingsIn(text) {
@@ -485,6 +685,10 @@
       el("toggle-preview").onclick = () =>
         setPreviewOpen(!document.body.classList.contains("preview-open"));
       el("save").onclick = save;
+      el("retranscribe").onclick = retranscribe;
+      // Deliberately no keyboard shortcut: a single keystroke should not be able to spend.
+      el("confirm-cancel").onclick = () => el("confirm").close("");
+      el("confirm-ok").onclick = () => el("confirm").close("ok");
       el("revert").onclick = () => { el("text").value = saved; refresh(); };
       el("prev").onclick = () => select(Math.max(index - 1, 0));
       el("next").onclick = () => select(Math.min(index + 1, pages.length - 1));
@@ -513,6 +717,10 @@
         el("text-pane").getBoundingClientRect().bottom - event.clientY);
 
       document.addEventListener("keydown", (event) => {
+        // While the confirmation is up it owns the keyboard: paging or saving underneath
+        // it would change what the user is being asked to approve. Escape still closes it,
+        // which <dialog> handles natively as a cancel.
+        if (el("confirm").open) return;
         if ((event.ctrlKey || event.metaKey) && event.key === "s") {
           event.preventDefault();
           if (!el("save").disabled) save();

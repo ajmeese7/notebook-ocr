@@ -4,6 +4,7 @@ import json
 import os
 import time
 
+import anthropic
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +15,11 @@ from notebook_ocr.config import Config
 from notebook_ocr.discover import sha256_file
 from notebook_ocr.review import _ALL_INTERFACES, browsable_url, create_app, lan_address
 from notebook_ocr.state import State
+from notebook_ocr.transcribe import (
+    CredentialsMissing,
+    TranscriptionError,
+    TranscriptionRefused,
+)
 
 
 def _write_page(directory, name, shade, captured_at):
@@ -46,6 +52,18 @@ def client(notebook):
     with TestClient(create_app(notebook)) as client:
         client.config = notebook
         yield client
+
+
+def _make_client(config, transcribe):
+    """A review client whose re-transcribe endpoint runs `transcribe` instead of the API.
+
+    Substituting the transcription call, not the HTTP client underneath it: everything the
+    endpoint is responsible for (preprocessing, cache writes, markdown rebuild, error
+    mapping) still runs for real. The alternative is billing a live call per test.
+    """
+    client = TestClient(create_app(config, transcribe=transcribe))
+    client.config = config
+    return client
 
 
 @pytest.mark.unit
@@ -252,6 +270,150 @@ def test_renaming_leaves_cached_transcriptions_intact(client):
     client.put("/api/notebook/title", json={"title": "Renamed"})
 
     assert State(client.config.state_file).get_text(sha) == "page one text"
+
+
+@pytest.mark.unit
+def test_notebook_names_the_model_a_retranscribe_would_bill(client):
+    """The confirmation has to name the charge, so the UI must be told what it is."""
+    assert client.get("/api/notebook").json()["model"] == "claude-opus-5"
+
+
+@pytest.mark.unit
+def test_retranscribe_replaces_the_cached_text(notebook):
+    with _make_client(notebook, lambda png: ("fresh output", "claude-opus-5")) as client:
+        sha = client.get("/api/notebook").json()["pages"][0]["sha256"]
+
+        page = client.post(f"/api/pages/{sha}/transcribe").json()
+
+    assert page["text"] == "fresh output"
+    assert page["status"] == "transcribed"
+    assert State(notebook.state_file).get_text(sha) == "fresh output"
+
+
+@pytest.mark.unit
+def test_retranscribe_sends_the_preprocessed_image(notebook):
+    """The model must see what `run` would send, not the raw photo off the camera."""
+    seen = []
+
+    with _make_client(notebook, lambda png: (seen.append(png), ("text", "m"))[1]) as client:
+        sha = client.get("/api/notebook").json()["pages"][0]["sha256"]
+        client.post(f"/api/pages/{sha}/transcribe")
+
+    assert Image.open(io.BytesIO(seen[0])).format == "PNG"
+
+
+@pytest.mark.unit
+def test_retranscribe_records_the_model_that_answered(notebook):
+    """A refusal fallback answers as a different model, and the page should say so."""
+    with _make_client(notebook, lambda png: ("fallback text", "claude-sonnet-5")) as client:
+        sha = client.get("/api/notebook").json()["pages"][0]["sha256"]
+
+        page = client.post(f"/api/pages/{sha}/transcribe").json()
+
+    assert page["model"] == "claude-sonnet-5"
+
+
+@pytest.mark.unit
+def test_retranscribe_clears_the_edited_flag(notebook):
+    """Fresh model output is not a human correction, however recently one was made."""
+    with _make_client(notebook, lambda png: ("model text", "claude-opus-5")) as client:
+        sha = client.get("/api/notebook").json()["pages"][0]["sha256"]
+        client.put(f"/api/pages/{sha}", json={"text": "corrected by hand"})
+
+        page = client.post(f"/api/pages/{sha}/transcribe").json()
+
+    assert page["status"] == "transcribed"
+    assert "edited_at" not in json.loads(notebook.state_file.read_text())["pages"][sha]
+
+
+@pytest.mark.unit
+def test_retranscribe_rebuilds_the_notebook_markdown(notebook):
+    with _make_client(notebook, lambda png: ("rebuilt into the vault", "claude-opus-5")) as client:
+        sha = client.get("/api/notebook").json()["pages"][0]["sha256"]
+        client.post(f"/api/pages/{sha}/transcribe")
+
+    assert "rebuilt into the vault" in (notebook.vault_dir / "field-notes.md").read_text()
+
+
+@pytest.mark.unit
+def test_retranscribe_resolves_a_recorded_failure(notebook):
+    """A refused page is the likeliest thing to be retried, so it must come back clean."""
+    with _make_client(notebook, lambda png: ("second attempt worked", "claude-opus-5")) as client:
+        sha = client.get("/api/notebook").json()["pages"][1]["sha256"]
+        state = State(notebook.state_file)
+        state.put_failure(sha, "refused", "TranscriptionRefused: model refused page")
+        state.save()
+
+        page = client.post(f"/api/pages/{sha}/transcribe").json()
+
+    assert page["status"] == "transcribed"
+    assert page["failure"] is None
+
+
+@pytest.mark.unit
+def test_failed_retranscribe_keeps_the_existing_text(notebook):
+    """A page holding a good transcription must not be emptied by a failed retry."""
+
+    def refuse(png):
+        raise TranscriptionRefused("model refused page")
+
+    with _make_client(notebook, refuse) as client:
+        sha = client.get("/api/notebook").json()["pages"][0]["sha256"]
+
+        response = client.post(f"/api/pages/{sha}/transcribe")
+
+    assert response.status_code == 502
+    assert "TranscriptionRefused" in response.json()["detail"]
+    assert State(notebook.state_file).get_text(sha) == "page one text"
+
+
+@pytest.mark.unit
+def test_failed_retranscribe_keeps_a_human_correction(notebook):
+    """The one irreplaceable thing on a page is the text a person typed."""
+
+    def fail(png):
+        raise TranscriptionError("model returned no text")
+
+    with _make_client(notebook, fail) as client:
+        sha = client.get("/api/notebook").json()["pages"][0]["sha256"]
+        client.put(f"/api/pages/{sha}", json={"text": "typed out by hand"})
+
+        client.post(f"/api/pages/{sha}/transcribe")
+
+        assert client.get("/api/notebook").json()["pages"][0]["status"] == "edited"
+
+    assert State(notebook.state_file).get_text(sha) == "typed out by hand"
+
+
+@pytest.mark.unit
+def test_missing_credentials_are_reported_rather_than_raised(notebook):
+    def unauthenticated(png):
+        raise CredentialsMissing("no Claude credentials found")
+
+    with _make_client(notebook, unauthenticated) as client:
+        sha = client.get("/api/notebook").json()["pages"][0]["sha256"]
+
+        response = client.post(f"/api/pages/{sha}/transcribe")
+
+    assert response.status_code == 503
+    assert "credentials" in response.json()["detail"]
+
+
+@pytest.mark.unit
+def test_retranscribing_an_unknown_page_returns_404(client):
+    assert client.post("/api/pages/deadbeef/transcribe").status_code == 404
+
+
+@pytest.mark.unit
+def test_opening_the_review_ui_never_builds_an_api_client(notebook, monkeypatch):
+    """Reviewing is free until the reviewer asks to spend: no client, no credential check."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        anthropic, "Anthropic", lambda *a, **k: pytest.fail("built an API client at startup")
+    )
+
+    with TestClient(create_app(notebook)) as client:
+        assert client.get("/api/notebook").status_code == 200
 
 
 @pytest.mark.unit

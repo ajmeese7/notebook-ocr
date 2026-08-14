@@ -44,18 +44,18 @@ The sidebar drags to any width (double-click the divider to reset) and `[` colla
 
 Saving writes the correction into `state.json` keyed by image hash and immediately rebuilds the notebook `.md`. Because the correction lives in the cache, a later `run` reuses it instead of overwriting it with the model's version.
 
-The review server never calls the Claude API, so reviewing cannot cost money.
+**Re-transcribe** sends the current page to the model again and replaces its text. The cache is keyed by image bytes, so nothing about a page ever invalidates it on its own: a prompt change, a different model, or a crop you have since fixed are all reasons to redo a page that is technically already done. This is the only action in the UI that calls the Claude API and the only one that costs money, so it is behind a confirmation naming the file, the model, and what will be overwritten (a saved correction is called out separately, since that is the one thing here a re-run cannot reproduce). A failed attempt changes nothing: the existing text or correction stays, and the error is shown in the toolbar.
 
-It binds every interface by default, so you can check pages from a phone or tablet on the same network. On startup it prints the address to use:
+Everything else in the UI is local and free. The server binds every interface by default, so you can check pages from a phone or tablet on the same network. On startup it prints the address to use:
 
 ```
 Review UI for field-notes-2024 at http://127.0.0.1:8420 (ctrl-c to stop)
   from another device on this network: http://192.168.1.204:8420
-  no password: anyone on this network can read and edit these notes
+  no password: anyone on this network can read, edit, and re-transcribe these
   restrict it with: --host 127.0.0.1
 ```
 
-There is no authentication, so anyone who can reach the port can read the notebook and rewrite it. That is fine on a home network and a bad idea on a shared or public one, where `--host 127.0.0.1` keeps it on this machine.
+There is no authentication, so anyone who can reach the port can read the notebook, rewrite it, and spend your API credit re-transcribing it. That is fine on a home network and a bad idea on a shared or public one, where `--host 127.0.0.1` keeps it on this machine.
 
 ## Config
 
